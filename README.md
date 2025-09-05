@@ -1,6 +1,6 @@
 # TurboRipent
 ![alt text](https://github.com/Outerbeast/TurboRipent/blob/main/preview.png?raw=true)
-Entity ripping at turbo speed
+Turbocharged entity ripping
 ## Features
 This is a TUI frontend for Ripent and [Lazyripent](https://github.com/Zode/Lazyripent2) which allow you to extract and import BSP entity data files quickly and easily
 Includes a basic entity editor for quick edits:
@@ -105,3 +105,4 @@ Thank you for using TurboRipent!
 - **Garompa** - Testing and feedback
 
 Special thanks to **Zode** for creating Lazyripent
+
