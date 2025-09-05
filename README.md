@@ -1,4 +1,5 @@
 # TurboRipent
+![alt text](https://github.com/Outerbeast/TurboRipent/blob/main/preview.png?raw=true)
 Entity ripping at turbo speed
 ## Features
 This is a TUI frontend for Ripent and [Lazyripent](https://github.com/Zode/Lazyripent2) which allow you to extract and import BSP entity data files quickly and easily
@@ -42,6 +43,8 @@ If the application is finding trouble finding Ripent and Lazyripent, you can del
 - Dragging a BSP file onto `TurboRipent-Editor.cmd` will launch the BSP in the editor. You can also run the cmd file as is - TurboRipent will ask for a BSP to edit.
 
 ### Editor
+![alt text](https://github.com/Outerbeast/TurboRipent/blob/main/editor_preview.png?raw=true)
+
 With the built-in editor, it is possible to make quick entity edits to maps.
 All of the entities in the BSP, represented by classnames, will be listed on the left in the entity list. These entities are selectable - when selecting one the entity's keyvalues are displayed in the box on the right and can be edited.
 Entity keyvalues are formatted as such
@@ -96,3 +99,4 @@ Thank you for using TurboRipent!
 - **Garompa** - Testing and feedback
 
 Special thanks to **Zode** for creating Lazyripent
+
