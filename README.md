@@ -28,6 +28,12 @@ The config file is in this structure:
   "RipentPath": "C:\\path\\to\\Ripent_x64.exe",
   "LazyripentPath": "C:\\path\\to\\lazyripent.exe",
   "Verbose": false,
+    "DefaultEntity": {
+    "angles": "0 0 0",
+    "classname": "info_null",
+    "origin": "0 0 0",
+    "spawnflags": "0"
+  }
 }
 ```
 
@@ -99,4 +105,3 @@ Thank you for using TurboRipent!
 - **Garompa** - Testing and feedback
 
 Special thanks to **Zode** for creating Lazyripent
-
