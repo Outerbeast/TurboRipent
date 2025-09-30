@@ -106,7 +106,7 @@ func GetPromptInput(prompt string) string {
 func ShowHelp() {
 
 	ClearTerminal()
-	fmt.Printf("\n%s\nThis tool allows you to extract and import BSP entity data.\nOptions:", ColouriseText("?-Help-?", BrightCyan, ""))
+	fmt.Printf("\n%s\nThis tool allows you to extract and import BSP entity data.\nOptions:\n", ColouriseText("?-Help-?", BrightCyan, ""))
 
 	for _, option := range MENU[1:11] {
 		fmt.Printf("\t%s : %s\n", option.Name, option.Description)
@@ -170,9 +170,9 @@ func DisplayMenu() bool { // TUI menu - return true if menu should remain open, 
 			blVerbose = !blVerbose
 
 			if !blVerbose {
-				MENU[9].Name = strings.Replace(MENU[8].Name, "ON", "OFF", 1)
+				MENU[9].Name = strings.Replace(MENU[9].Name, "ON", "OFF", 1)
 			} else {
-				MENU[9].Name = strings.Replace(MENU[8].Name, "OFF", "ON", 1)
+				MENU[9].Name = strings.Replace(MENU[9].Name, "OFF", "ON", 1)
 			}
 
 			ClearTerminal()

@@ -16,7 +16,6 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
-
 package main
 
 import (
@@ -111,40 +110,54 @@ func RipEntities(strBspName string, strArg string, blVerbose bool) {
 	for _, bsp := range BSPS {
 
 		fmt.Printf(ColouriseText("Processing BSP: %s\n", Cyan, ""), bsp)
-		cmdRipent := exec.Command(STR_EXES[0], strArg, bsp)
+		// Get the absolute path for the BSP file
+		BSPPath := filepath.Join(strBspName, bsp)
+		absBSPPath, err := filepath.Abs(BSPPath)
+
+		if err != nil {
+			fmt.Printf(ColouriseText("⚠️ Error getting absolute path for %s: %s\n", Yellow, ""), BSPPath, err)
+			continue
+		}
+
+		cmdRipent := exec.Command(STR_EXES[0], strArg, absBSPPath)
 
 		if strArg == "-chart" {
 
-			fileChart, err := os.OpenFile(bsp+".log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			fileChart, err := os.OpenFile(absBSPPath+".log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 
 			if err != nil {
 				log.Fatal(err)
 			}
 
 			defer fileChart.Close()
-
 			cmdRipent.Stdout = fileChart
 		}
+
 		// Output to console
 		if blVerbose {
-
 			cmdRipent.Stdout = os.Stdout
 			cmdRipent.Stderr = os.Stderr
 		}
 
-		err := cmdRipent.Run()
+		err = cmdRipent.Run()
 
 		if err != nil {
-			fmt.Printf(ColouriseText("❌ Error processing %s: %s\n", Red, ""), bsp, err)
+			fmt.Printf(ColouriseText("❌ Error processing %s: %s\n", Red, ""), absBSPPath, err)
 			countFail++
 		} else {
 			// For imports, remove imported .ent files
 			if strArg == "-import" {
 
-				ent := strings.TrimSuffix(bsp, filepath.Ext(bsp)) + ".ent"
+				ent := strings.TrimSuffix(BSPPath, filepath.Ext(bsp)) + ".ent"
+				absENTPath, err := filepath.Abs(ent)
 
-				if os.Remove(ent) != nil {
-					fmt.Println(ColouriseText("⚠️ Couldn't delete: ", Yellow, ""), ent)
+				if err != nil {
+					fmt.Printf(ColouriseText("⚠️ Error getting absolute path for %s: %s\n", Yellow, ""), ent, err)
+					continue
+				}
+
+				if os.Remove(absENTPath) != nil {
+					fmt.Println(ColouriseText("⚠️ Couldn't delete: ", Yellow, ""), absENTPath)
 				}
 			}
 
