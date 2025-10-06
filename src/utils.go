@@ -1,6 +1,6 @@
 /*
 	TurboRipent - TUI Frontend for Ripent / Lazyripent
-	Version 1.0
+	Version 1.1
 
 Copyright (C) 2025 Outerbeast
 This program is free software: you can redistribute it and/or modify
@@ -28,6 +28,34 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+)
+
+var (
+	dllKernel32 = windows.NewLazySystemDLL("kernel32.dll")
+
+	procSetConsoleTitleW = dllKernel32.NewProc("SetConsoleTitleW")
+	procGetConsoleWindow = dllKernel32.NewProc("GetConsoleWindow")
+	procShowWindow       = dllUser32.NewProc("ShowWindow")
+	procGetStdHandle     = dllKernel32.NewProc("GetStdHandle")
+	procGetConsoleMode   = dllKernel32.NewProc("GetConsoleMode")
+	procSetConsoleMode   = dllKernel32.NewProc("SetConsoleMode")
+)
+
+// Windows ShowWindow constants
+const (
+	SW_HIDE           = 0
+	SW_SHOWNORMAL     = 1
+	SW_SHOWMINIMIZED  = 2
+	SW_SHOWMAXIMIZED  = 3
+	SW_SHOWNOACTIVATE = 4
+	SW_SHOW           = 5
+	SW_MINIMIZE       = 6
+	SW_RESTORE        = 9
+)
+
+const (
+	STD_OUTPUT_HANDLE                  = uintptr(^uint32(10) + 1) // -11 as uintptr
+	ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
 )
 
 const (
@@ -70,39 +98,59 @@ func ColouriseText(text, fg, bg string) string {
 	return fg + bg + text + Reset
 }
 
+// SetConsoleTitle sets the console window title.
 func SetConsoleTitle(title string) error {
 
-	kernel32 := windows.NewLazySystemDLL("kernel32.dll")
-	setConsoleTitleW := kernel32.NewProc("SetConsoleTitleW")
-	_, _, err := setConsoleTitleW.Call(uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(title))))
+	ret, _, err := procSetConsoleTitleW.Call(
+		uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(title))),
+	)
 
-	if err != nil && err.Error() != "The operation completed successfully." {
+	if ret == 0 {
+		// API failed, err contains the Windows error
 		return err
 	}
 
 	return nil
 }
 
-func enableANSIColors() {
-	// Get handle to STDOUT
-	kernel32 := syscall.NewLazyDLL("kernel32.dll")
-	getStdHandle := kernel32.NewProc("GetStdHandle")
-	setConsoleMode := kernel32.NewProc("SetConsoleMode")
-	getConsoleMode := kernel32.NewProc("GetConsoleMode")
+// hideConsole hides the console window (or minimizes if you swap SW_HIDE for SW_MINIMIZE).
+func hideConsole() error {
 
-	const STD_OUTPUT_HANDLE = uint32(-11 & 0xFFFFFFFF)
-	hOut, _, _ := getStdHandle.Call(uintptr(STD_OUTPUT_HANDLE))
+	hwnd, _, _ := procGetConsoleWindow.Call()
+
+	if hwnd == 0 {
+		return fmt.Errorf("no console window handle")
+	}
+	// ShowWindow returns the previous visibility state, not strictly an error
+	procShowWindow.Call(hwnd, SW_HIDE)
+	return nil
+}
+
+// enableANSIColors enables ANSI escape sequence processing in the Windows console.
+func enableANSIColors() error {
+	// Get handle to STDOUT
+	hOut, _, err := procGetStdHandle.Call(STD_OUTPUT_HANDLE)
 
 	if hOut == 0 {
-		return
+		return fmt.Errorf("GetStdHandle failed: %v", err)
 	}
 
 	var mode uint32
-	getConsoleMode.Call(hOut, uintptr(unsafe.Pointer(&mode)))
+	ret, _, err := procGetConsoleMode.Call(hOut, uintptr(unsafe.Pointer(&mode)))
+
+	if ret == 0 {
+		return fmt.Errorf("GetConsoleMode failed: %v", err)
+	}
 
 	// Enable ANSI escape sequence processing
-	mode |= 0x0004
-	setConsoleMode.Call(hOut, uintptr(mode))
+	mode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING
+	ret, _, err = procSetConsoleMode.Call(hOut, uintptr(mode))
+
+	if ret == 0 {
+		return fmt.Errorf("SetConsoleMode failed: %v", err)
+	}
+
+	return nil
 }
 
 func setHidden(path string) error {
@@ -159,4 +207,23 @@ func findFileOnDrive(drive string, targetFile string) []string {
 	})
 
 	return MATCHES
+}
+
+// !-TODO-!: Proper error handling - for now this is a hibernating bear
+func wtfPointer(s string) *uint16 {
+
+	ptr, err := syscall.UTF16PtrFromString(s)
+
+	if err != nil {
+		LoudPanic("Fatal Error: wtfPointer assign failed.", err)
+	}
+
+	return ptr
+}
+
+func LoudPanic(msg string, e error) {
+
+	fmt.Println(ColouriseText("\n\t(╯°□°)╯︵ ┻━┻\t\n%s\n", Red, ""), msg)
+	fmt.Printf(ColouriseText("Table Flippation: %s", Red, ""), e)
+	panic(e)
 }

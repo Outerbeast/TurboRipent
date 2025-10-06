@@ -1,6 +1,6 @@
 /*
 	TurboRipent - TUI Frontend for Ripent / Lazyripent
-	Version 1.0
+	Version 1.1
 
 Copyright (C) 2025 Outerbeast
 This program is free software: you can redistribute it and/or modify
@@ -40,17 +40,19 @@ func main() {
 	// Save on Ctrl+C / SIGTERM
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+
 	go func() {
 		<-c
 		StoreSettings()
 		os.Exit(0)
 	}()
-	// Dragged bsp files, extract immediately
+
 	if len(os.Args) > 1 {
+
 		if os.Args[1] == "-edit" {
 			LaunchEditor(os.Args[2])
 		} else {
-
+			// Handle quick extract/import/rule
 			for _, path := range os.Args[1:] {
 
 				if !strings.HasSuffix(path, ".bsp") &&
@@ -67,8 +69,6 @@ func main() {
 				} else if strings.HasSuffix(path, ".rule") {
 					ApplyRule(path, strings.TrimSuffix(path, ".rule")+".bsp")
 				}
-
-				fmt.Printf("📦 Received file: %s\n", path)
 			}
 		}
 	} else {

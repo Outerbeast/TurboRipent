@@ -1,6 +1,6 @@
 /*
 	TurboRipent - TUI Frontend for Ripent / Lazyripent
-	Version 1.0
+	Version 1.1
 
 Copyright (C) 2025 Outerbeast
 This program is free software: you can redistribute it and/or modify
@@ -35,18 +35,26 @@ import (
 )
 
 var (
-	hInstance                                                 win.HINSTANCE
-	listBox, textBox, bntSave, btnCreate, btnClone, btnDelete win.HWND
-	ENTITIES                                                  []Entity
-	strEntityFile                                             string
-	blUpdatingListbox                                         bool
-	pClassName                                                *uint16
-	registerUI                                                sync.Once
-	user32                                                    = syscall.NewLazyDLL("user32.dll")
-	procGetWindowTextW                                        = user32.NewProc("GetWindowTextW")
-	procGetWindowTextLengthW                                  = user32.NewProc("GetWindowTextLengthW")
-	procSetWindowTextW                                        = user32.NewProc("SetWindowTextW")
-	CloseMode                                                 = closeNone
+	hInstance  win.HINSTANCE
+	editor     *EditorUI
+	registerUI sync.Once
+	pClassName *uint16
+	CloseMode  = closeNone
+)
+
+var (
+	dllUser32                = syscall.NewLazyDLL("user32.dll")
+	procGetWindowTextW       = dllUser32.NewProc("GetWindowTextW")
+	procGetWindowTextLengthW = dllUser32.NewProc("GetWindowTextLengthW")
+	procSetWindowTextW       = dllUser32.NewProc("SetWindowTextW")
+)
+
+var (
+	ENTITIES          []Entity
+	FILTERED_IDXS     []int
+	strEntityFile     string
+	blUpdatingListbox bool
+	prevSel           int = -1
 )
 
 const (
@@ -60,6 +68,16 @@ const (
 	closeSilent // Save button: apply with -u
 	closePrompt // X-close: prompt
 )
+
+type EditorUI struct {
+	List   ListBox
+	Text   TextBox
+	Filter TextBox
+	Create Button
+	Clone  Button
+	Delete Button
+	Save   Button
+}
 
 type Entity struct {
 	KeyValues map[string]string `json:"KeyValues"`
@@ -90,8 +108,10 @@ func classnamesFromEntities(ENTITIES []Entity) []string {
 	for _, entity := range ENTITIES {
 
 		if cn, ok := entity.KeyValues["classname"]; ok && cn != "" {
+
 			NAMES = append(NAMES, cn)
 		} else {
+
 			NAMES = append(NAMES, "<no classname>")
 		}
 	}
@@ -171,30 +191,50 @@ func splitLines(s string) []string {
 	}
 
 	if start < len(s) {
+
 		OUT = append(OUT, s[start:])
 	}
 
 	return OUT
 }
 
+// Refreshes the listbox entry for the currently selected entity
+func refreshSelectedEntityListbox() {
+
+	sel := int(win.SendMessage(editor.List.hwnd, win.LB_GETCURSEL, 0, 0))
+	if sel < 0 || sel >= len(ENTITIES) {
+		return
+	}
+
+	className := ENTITIES[sel].KeyValues["classname"]
+
+	if className == "" {
+		className = "<no classname>"
+	}
+
+	win.SendMessage(editor.List.hwnd, win.LB_DELETESTRING, uintptr(sel), 0)
+	win.SendMessage(editor.List.hwnd, win.LB_INSERTSTRING, uintptr(sel), uintptr(unsafe.Pointer(wtfPointer(className))))
+	win.SendMessage(editor.List.hwnd, win.LB_SETCURSEL, uintptr(sel), 0)
+}
+
 // Snapshot to avoid data races during async save
-func snapshotEntities(in []Entity) []Entity {
+func snapshotEntities(ENTITIES []Entity) []Entity {
 
-	OUT := make([]Entity, len(in))
+	OUT := make([]Entity, len(ENTITIES))
 
-	for i := range in {
+	for i := range ENTITIES {
 
-		OUT[i].KeyValues = make(map[string]string, len(in[i].KeyValues))
+		OUT[i].KeyValues = make(map[string]string, len(ENTITIES[i].KeyValues))
 
-		maps.Copy(OUT[i].KeyValues, in[i].KeyValues)
+		maps.Copy(OUT[i].KeyValues, ENTITIES[i].KeyValues)
 	}
 
 	return OUT
 }
 
-func saveEntities(path string, entities []Entity) error {
+func saveEntities(path string, ENTITIES []Entity) error {
 
-	data, err := json.MarshalIndent(entities, "", "  ")
+	data, err := json.MarshalIndent(ENTITIES, "", "  ")
 
 	if err != nil {
 		return err
@@ -209,21 +249,85 @@ func getWindowText(hwnd win.HWND) string {
 	textLen, _, _ := procGetWindowTextLengthW.Call(uintptr(hwnd))
 
 	if textLen == 0 {
+
 		return ""
 	}
 
 	buf := make([]uint16, textLen+1)
+
 	procGetWindowTextW.Call(
 		uintptr(hwnd),
 		uintptr(unsafe.Pointer(&buf[0])),
 		uintptr(len(buf)),
 	)
+
 	return syscall.UTF16ToString(buf)
 }
 
 func setWindowText(hwnd win.HWND, s string) {
 	ptr, _ := syscall.UTF16PtrFromString(s)
 	procSetWindowTextW.Call(uintptr(hwnd), uintptr(unsafe.Pointer(ptr)))
+}
+
+func setRedraw(hwnd win.HWND, enable bool) {
+
+	if enable {
+		win.SendMessage(hwnd, win.WM_SETREDRAW, 1, 0)
+		win.InvalidateRect(hwnd, nil, true)
+	} else {
+		win.SendMessage(hwnd, win.WM_SETREDRAW, 0, 0)
+	}
+}
+
+func applyEntityFilter(filter string) {
+
+	filter = strings.ToLower(strings.TrimSpace(filter))
+	blUpdatingListbox = true
+	defer func() { blUpdatingListbox = false }()
+
+	// Clear and rebuild
+	win.SendMessage(editor.List.hwnd, win.LB_RESETCONTENT, 0, 0)
+	FILTERED_IDXS = FILTERED_IDXS[:0]
+
+	if filter == "" {
+
+		for i, name := range classnamesFromEntities(ENTITIES) {
+
+			editor.List.AddString(name)
+			FILTERED_IDXS = append(FILTERED_IDXS, i)
+		}
+	} else {
+
+		for i, ent := range ENTITIES {
+
+			// If classname can be missing, guard it
+			class := ent.KeyValues["classname"]
+			for k, v := range ent.KeyValues {
+
+				if strings.Contains(strings.ToLower(k), filter) || strings.Contains(strings.ToLower(v), filter) {
+
+					editor.List.AddString(class)
+					FILTERED_IDXS = append(FILTERED_IDXS, i)
+
+					break
+				}
+			}
+		}
+	}
+
+	// Update selection and editor text consistently
+	if len(FILTERED_IDXS) > 0 {
+
+		win.SendMessage(editor.List.hwnd, win.LB_SETCURSEL, 0, 0)
+		idx := FILTERED_IDXS[0]
+		editor.Text.SetText(renderKeyValues(ENTITIES[idx].KeyValues))
+		prevSel = idx
+	} else {
+		// No match: clear selection and text
+		win.SendMessage(editor.List.hwnd, win.LB_SETCURSEL, uintptr(^uint32(0)), 0) // LB_ERR
+		editor.Text.SetText("")
+		prevSel = -1
+	}
 }
 
 func LaunchEditor(chosenBSP string) {
@@ -241,13 +345,13 @@ func LaunchEditor(chosenBSP string) {
 	RipJSON(chosenBSP, false, true) // skip confirmation as a previous entity file should automatically be overwritten
 	strEntityFile = strings.TrimSuffix(chosenBSP, ".bsp") + ".ent"
 	setHidden(strEntityFile)
+	hideConsole()
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
 	hInstance = win.GetModuleHandle(nil)
 	pClassName, _ = syscall.UTF16PtrFromString("MyWin32WindowClass")
-
 	// wrap RegisterClassEx in sync.Once so it runs only the first time ---
 	registerUI.Do(func() {
 		var wc win.WNDCLASSEX
@@ -259,26 +363,28 @@ func LaunchEditor(chosenBSP string) {
 		wc.LpszClassName = pClassName
 
 		if win.RegisterClassEx(&wc) == 0 {
-			panic(fmt.Sprintf("RegisterClassEx failed: %v", syscall.GetLastError()))
+			LoudPanic("RegisterClassEx failed:", syscall.GetLastError())
 		}
 	})
 
-	hwnd := win.CreateWindowEx(
-		0,
-		pClassName,
-		syscall.StringToUTF16Ptr(AppName+" Editor - "+filepath.Base(chosenBSP)),
-		win.WS_OVERLAPPEDWINDOW,
-		win.CW_USEDEFAULT, win.CW_USEDEFAULT,
-		windowHeight, windowWidth,
-		0, 0, hInstance, nil,
-	)
+	wndEditor := CreateWindow(WindowSpec{
+		ClassName: pClassName,
+		Title:     AppName + " Editor - " + filepath.Base(chosenBSP),
+		Style:     win.WS_OVERLAPPEDWINDOW,
+		X:         win.CW_USEDEFAULT,
+		Y:         win.CW_USEDEFAULT,
+		W:         windowWidth,
+		H:         windowHeight,
+		HInstance: hInstance,
+	})
 
-	win.ShowWindow(hwnd, win.SW_SHOWDEFAULT)
-	win.UpdateWindow(hwnd)
+	win.ShowWindow(wndEditor, win.SW_SHOWDEFAULT)
+	win.UpdateWindow(wndEditor)
 
 	var msg win.MSG
 
 	for win.GetMessage(&msg, 0, 0, 0) > 0 {
+
 		win.TranslateMessage(&msg)
 		win.DispatchMessage(&msg)
 	}
@@ -291,300 +397,160 @@ func EditorWindow(hwnd win.HWND, msg uint32, wParam, lParam uintptr) uintptr {
 
 	case win.WM_CREATE:
 		{
-			// ListBox (explicit styles; no LBS_STANDARD/LBS_SORT)
-			listBox = win.CreateWindowEx(
-				0, syscall.StringToUTF16Ptr("LISTBOX"), nil,
-				win.WS_CHILD|win.WS_VISIBLE|win.WS_BORDER|win.WS_VSCROLL|win.LBS_NOTIFY,
-				10, 10, 200, 400,
-				hwnd, 0, hInstance, nil,
+			editor = &EditorUI{
+				List:   NewListBox(hwnd, 10, 10, 300, 400),
+				Text:   NewTextBox(hwnd, 320, 10, 450, 360),
+				Filter: NewTextBox(hwnd, 10, 420, 300, 25),
+				Create: NewButton(hwnd, "Create", 0, 0, 80, 30, onCreate),
+				Clone:  NewButton(hwnd, "Clone", 0, 0, 80, 30, onClone),
+				Delete: NewButton(hwnd, "Delete", 0, 0, 80, 30, onDelete),
+				Save:   NewButton(hwnd, "Save", 0, 0, 80, 30, onSave),
+			}
+
+			style := uint32(win.GetWindowLong(editor.Filter.hwnd, win.GWL_STYLE))
+			style &^= win.WS_VSCROLL | win.ES_AUTOVSCROLL
+			win.SetWindowLong(editor.Filter.hwnd, win.GWL_STYLE, int32(style))
+			win.SetWindowPos(editor.Filter.hwnd,
+				0,
+				0, 0, 0, 0,
+				win.SWP_NOMOVE|win.SWP_NOSIZE|win.SWP_NOZORDER|win.SWP_FRAMECHANGED,
 			)
-
-			// Multiline TextBox
-			textBox = win.CreateWindowEx(
-				win.WS_EX_CLIENTEDGE, syscall.StringToUTF16Ptr("EDIT"), nil,
-				win.WS_CHILD|win.WS_VISIBLE|win.WS_BORDER|win.WS_VSCROLL|
-					win.ES_AUTOVSCROLL|win.ES_MULTILINE|win.ES_WANTRETURN,
-				220, 10, 450, 360,
-				hwnd, 0, hInstance, nil,
-			)
-
-			// Buttons
-			btnCreate = win.CreateWindowEx(0,
-				syscall.StringToUTF16Ptr("BUTTON"),
-				syscall.StringToUTF16Ptr("Create"),
-				win.WS_CHILD|win.WS_VISIBLE,
-				0, 0, 80, 30, hwnd, 0, hInstance, nil)
-
-			btnClone = win.CreateWindowEx(0,
-				syscall.StringToUTF16Ptr("BUTTON"),
-				syscall.StringToUTF16Ptr("Clone"),
-				win.WS_CHILD|win.WS_VISIBLE,
-				0, 0, 80, 30, hwnd, 0, hInstance, nil)
-
-			btnDelete = win.CreateWindowEx(0,
-				syscall.StringToUTF16Ptr("BUTTON"),
-				syscall.StringToUTF16Ptr("Delete"),
-				win.WS_CHILD|win.WS_VISIBLE,
-				0, 0, 80, 30, hwnd, 0, hInstance, nil)
-
-			bntSave = win.CreateWindowEx(0,
-				syscall.StringToUTF16Ptr("BUTTON"),
-				syscall.StringToUTF16Ptr("Save"),
-				win.WS_CHILD|win.WS_VISIBLE|win.BS_DEFPUSHBUTTON,
-				0, 0, 80, 30, hwnd, 0, hInstance, nil)
 
 			// Load entities
 			var err error
 			ENTITIES, err = loadEntities(strEntityFile)
+
 			if err != nil {
-				setWindowText(textBox, fmt.Sprintf("Error loading entities.json:\r\n%v", err))
+				editor.Text.SetText(fmt.Sprintf("Error loading entities.json:\r\n%v", err))
 				return 0
 			}
+			// Populate listbox
+			setRedraw(editor.List.hwnd, false)
 
-			// Populate listbox with redraw suppression
-			setRedraw(listBox, false)
-			for _, name := range classnamesFromEntities(ENTITIES) {
-				win.SendMessage(listBox, win.LB_ADDSTRING, 0,
-					uintptr(unsafe.Pointer(utf16Ptr(name))))
+			for i, name := range classnamesFromEntities(ENTITIES) {
+
+				editor.List.AddString(name)
+				FILTERED_IDXS = append(FILTERED_IDXS, i) // initial 1:1 mapping
 			}
-			setRedraw(listBox, true)
+
+			setRedraw(editor.List.hwnd, true)
+
+			if len(ENTITIES) > 0 {
+
+				win.SendMessage(editor.List.hwnd, win.LB_SETCURSEL, 0, 0)
+				editor.Text.SetText(renderKeyValues(ENTITIES[0].KeyValues))
+				prevSel = 0
+			}
 		}
 
 	case win.WM_GETMINMAXINFO:
 		{
 			mmi := (*win.MINMAXINFO)(unsafe.Pointer(lParam))
-			mmi.PtMinTrackSize.X = windowHeightMin // min width
-			mmi.PtMinTrackSize.Y = windowWidthMin  // min height
+			//!-TODO-!: Replace all of these magic numbers, which will take forever
+			margin, buttonWidth, buttonSpacing, numButtons := 10, 80, 10, 4
+
+			// Minimum width to fit listbox + textbox + buttons
+			minTextBoxWidth := buttonWidth*numButtons + buttonSpacing*(numButtons-1)
+			minWidth := 350 + margin*3 + minTextBoxWidth
+
+			// Minimum height to fit listbox + buttons
+			minHeight := 200 + margin*2 + 40 // list height + margins + button height + spacing
+
+			mmi.PtMinTrackSize.X = int32(minWidth)
+			mmi.PtMinTrackSize.Y = int32(minHeight)
+
 			return 0
 		}
 
 	case win.WM_SIZE:
 		{
-			width := int(win.LOWORD(uint32(lParam)))
-			height := int(win.HIWORD(uint32(lParam)))
-
-			margin := 10
-			buttonWidth := 80
-			buttonHeight := 30
-			buttonSpacing := 10
+			width, height := int(win.LOWORD(uint32(lParam))), int(win.HIWORD(uint32(lParam)))
+			margin, buttonWidth, buttonHeight, buttonSpacing, filterHeight := 10, 80, 30, 10, 25
 
 			// Height for listbox and textbox so they match
 			listHeight := height - (margin*2 + buttonHeight + buttonSpacing)
 
 			// ListBox on the left
-			win.MoveWindow(listBox, int32(margin), int32(margin), 200, int32(listHeight), true)
+			win.MoveWindow(editor.List.hwnd, int32(margin), int32(margin), 300, int32(listHeight)+10, true)
 
 			// TextBox to the right of listbox
-			textX := margin + 200 + margin
+			textX := 300 + margin*2
 			textWidth := width - textX - margin
-			win.MoveWindow(textBox, int32(textX), int32(margin), int32(textWidth), int32(listHeight), true)
+			win.MoveWindow(editor.Text.hwnd, int32(textX), int32(margin), int32(textWidth), int32(listHeight), true)
 
 			// Buttons row Y position
 			btnY := margin + listHeight + buttonSpacing
 
 			// Create aligned to left edge of textbox
 			createX := textX
-			win.MoveWindow(btnCreate, int32(createX), int32(btnY), int32(buttonWidth), int32(buttonHeight), true)
+			win.MoveWindow(editor.Create.hwnd, int32(createX), int32(btnY), int32(buttonWidth), int32(buttonHeight), true)
 
 			// Clone to the right of Create
 			cloneX := createX + buttonWidth + buttonSpacing
-			win.MoveWindow(btnClone, int32(cloneX), int32(btnY), int32(buttonWidth), int32(buttonHeight), true)
+			win.MoveWindow(editor.Clone.hwnd, int32(cloneX), int32(btnY), int32(buttonWidth), int32(buttonHeight), true)
 
 			// Delete to the right of Clone
 			deleteX := cloneX + buttonWidth + buttonSpacing
-			win.MoveWindow(btnDelete, int32(deleteX), int32(btnY), int32(buttonWidth), int32(buttonHeight), true)
+			win.MoveWindow(editor.Delete.hwnd, int32(deleteX), int32(btnY), int32(buttonWidth), int32(buttonHeight), true)
 
 			// Save anchored to far right
 			saveX := width - margin - buttonWidth
-			win.MoveWindow(bntSave, int32(saveX), int32(btnY), int32(buttonWidth), int32(buttonHeight), true)
+			win.MoveWindow(editor.Save.hwnd, int32(saveX), int32(btnY), int32(buttonWidth), int32(buttonHeight), true)
+			win.MoveWindow(editor.List.hwnd, int32(margin), int32(margin), 300, int32(listHeight), true)
+			win.MoveWindow(editor.Filter.hwnd, int32(margin), int32(margin+listHeight+margin), 300, int32(filterHeight), true)
 		}
 
 	case win.WM_COMMAND:
 		{
-			notify := win.HIWORD(uint32(wParam))
 			src := win.HWND(lParam)
+			notify := win.HIWORD(uint32(wParam))
 
-			// Selection change: ignore while we're programmatically updating the listbox
-			if src == listBox && notify == win.LBN_SELCHANGE && !blUpdatingListbox {
-				sel := int(win.SendMessage(listBox, win.LB_GETCURSEL, 0, 0))
-				if sel >= 0 && sel < len(ENTITIES) {
-					setWindowText(textBox, renderKeyValues(ENTITIES[sel].KeyValues))
-				}
-			}
-
-			// Save (async; snapshot to avoid races)
-			if src == bntSave && notify == win.BN_CLICKED {
-				CloseMode = closeSilent // declare intent
-				sel := int(win.SendMessage(listBox, win.LB_GETCURSEL, 0, 0))
-				if sel >= 0 && sel < len(ENTITIES) {
-					ENTITIES[sel].KeyValues = parseKeyValues(getWindowText(textBox))
-					snap := snapshotEntities(ENTITIES)
-					go func(hwnd win.HWND, ents []Entity, sel int) {
-						err := saveEntities(strEntityFile, ents)
-						status := uintptr(0)
-						if err != nil {
-							status = 1
+			switch {
+			// --- Listbox selection change ---
+			case src == editor.List.hwnd && notify == win.LBN_SELCHANGE && !blUpdatingListbox:
+				{
+					sel := int(win.SendMessage(editor.List.hwnd, win.LB_GETCURSEL, 0, 0))
+					if sel >= 0 && sel < len(FILTERED_IDXS) {
+						idx := FILTERED_IDXS[sel]
+						if prevSel != -1 && prevSel < len(ENTITIES) {
+							ENTITIES[prevSel].KeyValues = parseKeyValues(editor.Text.Text())
 						}
-						win.PostMessage(hwnd, WM_SAVE_COMPLETE, status, uintptr(sel))
-					}(hwnd, snap, sel)
-				}
-			}
-
-			// Create: guarded UI mutation + async persist
-			if src == btnCreate && notify == win.BN_CLICKED {
-				var kv map[string]string
-				if len(mapDefaultEntityTemplate) > 0 {
-					// Deep copy template so edits don't mutate the config
-					kv = make(map[string]string, len(mapDefaultEntityTemplate))
-					for k, v := range mapDefaultEntityTemplate {
-						kv[k] = v
+						editor.Text.SetText(renderKeyValues(ENTITIES[idx].KeyValues))
+						prevSel = idx
 					}
-				} else {
-					kv = map[string]string{"classname": "new_entity"}
 				}
 
-				newEntity := Entity{KeyValues: kv}
-				ENTITIES = append(ENTITIES, newEntity)
-				name := newEntity.KeyValues["classname"]
-				if name == "" {
-					name = "<no classname>"
+			// --- Textbox edits ---
+			case src == editor.Text.hwnd && notify == win.EN_CHANGE:
+				{
+					sel := int(win.SendMessage(editor.List.hwnd, win.LB_GETCURSEL, 0, 0))
+					if sel >= 0 && sel < len(FILTERED_IDXS) {
+						idx := FILTERED_IDXS[sel]
+						ENTITIES[idx].KeyValues = parseKeyValues(editor.Text.Text())
+						refreshSelectedEntityListbox()
+					}
 				}
 
-				blUpdatingListbox = true
-				setRedraw(listBox, false)
-				idx := int(win.SendMessage(listBox, win.LB_ADDSTRING, 0, uintptr(unsafe.Pointer(utf16Ptr(name)))))
-				win.SendMessage(listBox, win.LB_SETCURSEL, uintptr(idx), 0)
-				win.SendMessage(listBox, win.LB_SETTOPINDEX, uintptr(idx), 0)
-				setRedraw(listBox, true)
-				blUpdatingListbox = false
+			// --- Filter box edits ---
+			case src == editor.Filter.hwnd && notify == win.EN_CHANGE:
+				applyEntityFilter(editor.Filter.Text())
 
-				setWindowText(textBox, renderKeyValues(newEntity.KeyValues))
-
-				snap := snapshotEntities(ENTITIES)
-				go func(hwnd win.HWND, ents []Entity, sel int) {
-					err := saveEntities(strEntityFile, ents)
-					status := uintptr(0)
-					if err != nil {
-						status = 1
-					}
-					win.PostMessage(hwnd, WM_SAVE_COMPLETE, status, uintptr(sel))
-				}(hwnd, snap, idx)
-			}
-
-			// Clone: duplicate selected entity + async persist
-			if src == btnClone && notify == win.BN_CLICKED {
-				sel := int(win.SendMessage(listBox, win.LB_GETCURSEL, 0, 0))
-				if sel >= 0 && sel < len(ENTITIES) {
-					// Deep copy KeyValues map
-					orig := ENTITIES[sel]
-					clonedKV := make(map[string]string, len(orig.KeyValues))
-					maps.Copy(clonedKV, orig.KeyValues)
-					newEntity := Entity{KeyValues: clonedKV}
-
-					// Append to ENTITIES
-					ENTITIES = append(ENTITIES, newEntity)
-					name := newEntity.KeyValues["classname"]
-					if name == "" {
-						name = "<no classname>"
-					}
-
-					// Update listbox
-					blUpdatingListbox = true
-					setRedraw(listBox, false)
-					idx := int(win.SendMessage(listBox, win.LB_ADDSTRING, 0, uintptr(unsafe.Pointer(utf16Ptr(name)))))
-					win.SendMessage(listBox, win.LB_SETCURSEL, uintptr(idx), 0)
-					win.SendMessage(listBox, win.LB_SETTOPINDEX, uintptr(idx), 0)
-					setRedraw(listBox, true)
-					blUpdatingListbox = false
-
-					// Show cloned entity in textbox
-					setWindowText(textBox, renderKeyValues(newEntity.KeyValues))
-
-					// Persist asynchronously
-					snap := snapshotEntities(ENTITIES)
-					go func(hwnd win.HWND, ents []Entity, sel int) {
-						err := saveEntities(strEntityFile, ents)
-						status := uintptr(0)
-						if err != nil {
-							status = 1
-						}
-						win.PostMessage(hwnd, WM_SAVE_COMPLETE, status, uintptr(sel))
-					}(hwnd, snap, idx)
-				}
-			}
-
-			// Delete: guarded UI mutation + async persist
-			if src == btnDelete && notify == win.BN_CLICKED {
-				sel := int(win.SendMessage(listBox, win.LB_GETCURSEL, 0, 0))
-				if sel >= 0 && sel < len(ENTITIES) {
-					ENTITIES = append(ENTITIES[:sel], ENTITIES[sel+1:]...)
-
-					blUpdatingListbox = true
-					setRedraw(listBox, false)
-					win.SendMessage(listBox, win.LB_DELETESTRING, uintptr(sel), 0)
-					if sel >= len(ENTITIES) {
-						sel = len(ENTITIES) - 1
-					}
-					if sel >= 0 {
-						win.SendMessage(listBox, win.LB_SETCURSEL, uintptr(sel), 0)
-						win.SendMessage(listBox, win.LB_SETTOPINDEX, uintptr(sel), 0)
-					}
-					setRedraw(listBox, true)
-					blUpdatingListbox = false
-
-					if sel >= 0 {
-						setWindowText(textBox, renderKeyValues(ENTITIES[sel].KeyValues))
-					} else {
-						setWindowText(textBox, "")
-					}
-
-					snap := snapshotEntities(ENTITIES)
-					go func(hwnd win.HWND, ents []Entity, sel int) {
-						err := saveEntities(strEntityFile, ents)
-						status := uintptr(0)
-						if err != nil {
-							// logErr(err)
-							status = 1
-						}
-						win.PostMessage(hwnd, WM_SAVE_COMPLETE, status, uintptr(sel))
-					}(hwnd, snap, sel)
-				}
+			// --- Buttons ---
+			case src == editor.Create.hwnd:
+				editor.Create.HandleCommand(notify, hwnd)
+			case src == editor.Clone.hwnd:
+				editor.Clone.HandleCommand(notify, hwnd)
+			case src == editor.Delete.hwnd:
+				editor.Delete.HandleCommand(notify, hwnd)
+			case src == editor.Save.hwnd:
+				editor.Save.HandleCommand(notify, hwnd)
 			}
 		}
-
-	case WM_SAVE_COMPLETE:
-		{
-			status := wParam
-			sel := int(lParam)
-			if status == 0 && sel >= 0 && sel < len(ENTITIES) {
-				// refresh UI...
-				name := ENTITIES[sel].KeyValues["classname"]
-				if name == "" {
-					name = "<no classname>"
-				}
-				blUpdatingListbox = true
-				top := int(win.SendMessage(listBox, win.LB_GETTOPINDEX, 0, 0))
-				setRedraw(listBox, false)
-				win.SendMessage(listBox, win.LB_DELETESTRING, uintptr(sel), 0)
-				win.SendMessage(listBox, win.LB_INSERTSTRING, uintptr(sel), uintptr(unsafe.Pointer(utf16Ptr(name))))
-				win.SendMessage(listBox, win.LB_SETCURSEL, uintptr(sel), 0)
-				if top >= 0 {
-					win.SendMessage(listBox, win.LB_SETTOPINDEX, uintptr(top), 0)
-				}
-				setRedraw(listBox, true)
-				blUpdatingListbox = false
-
-				// If Save button initiated this, close via WM_CLOSE
-				if CloseMode == closeSilent {
-					win.PostMessage(hwnd, win.WM_CLOSE, 0, 0)
-				}
-			}
-		}
-
-		// Centralized close logic — runs exactly once
+	// Centralized close logic — runs exactly once
 	case win.WM_CLOSE:
 		{
 			mode := CloseMode
+
 			if mode == closeNone {
 				mode = closePrompt
 			}
@@ -592,17 +558,16 @@ func EditorWindow(hwnd win.HWND, msg uint32, wParam, lParam uintptr) uintptr {
 			if mode == closeSilent {
 				// Save button path — already saved, apply silently
 				RipJSON(strEntityFile, true, true) // -u
-			} else { // Prompt path
-				// Ask the user in a GUI dialog
-				res := win.MessageBox(hwnd,
-					syscall.StringToUTF16Ptr("Apply changes to BSP?"),
-					syscall.StringToUTF16Ptr("Confirm Apply"),
-					win.MB_YESNOCANCEL|win.MB_ICONQUESTION)
+			} else {
 
-				switch res {
+				switch MessageBox("Confirm changes", "Apply changes to BSP?", win.MB_YESNOCANCEL|win.MB_ICONQUESTION) {
+
 				case win.IDYES:
-					_ = saveEntities(strEntityFile, ENTITIES)
-					RipJSON(strEntityFile, true, true) // apply silently after GUI confirm
+					{
+						_ = saveEntities(strEntityFile, ENTITIES)
+						RipJSON(strEntityFile, true, true) // apply silently after GUI confirm
+					}
+
 				case win.IDNO:
 					// Discard changes — do nothing
 				case win.IDCANCEL:
@@ -616,14 +581,17 @@ func EditorWindow(hwnd win.HWND, msg uint32, wParam, lParam uintptr) uintptr {
 
 			CloseMode = closeNone
 			win.DestroyWindow(hwnd)
+
 			return 0
 		}
 
+	// WM_DESTROY message remains the same
 	case win.WM_DESTROY:
 		{
 			// No RipJSON here — it already ran in WM_CLOSE
 			win.UnregisterClass(pClassName)
 			win.PostQuitMessage(0)
+
 			return 0
 		}
 	}
@@ -631,16 +599,130 @@ func EditorWindow(hwnd win.HWND, msg uint32, wParam, lParam uintptr) uintptr {
 	return win.DefWindowProc(hwnd, msg, wParam, lParam)
 }
 
-func utf16Ptr(s string) *uint16 {
-	p, _ := syscall.UTF16PtrFromString(s)
-	return p
+func onCreate(hwnd win.HWND) {
+
+	var kv map[string]string
+
+	if len(mapDefaultEntityTemplate) > 0 {
+		kv = make(map[string]string, len(mapDefaultEntityTemplate))
+		maps.Copy(kv, mapDefaultEntityTemplate)
+	} else {
+		kv = map[string]string{"classname": "new_entity"}
+	}
+
+	newEntity := Entity{KeyValues: kv}
+	ENTITIES = append(ENTITIES, newEntity)
+	name := newEntity.KeyValues["classname"]
+
+	if name == "" {
+		name = "<no classname>"
+	}
+
+	blUpdatingListbox = true
+	setRedraw(editor.List.hwnd, false)
+	idx := editor.List.AddString(name)
+	win.SendMessage(editor.List.hwnd, win.LB_SETCURSEL, uintptr(idx), 0)
+	win.SendMessage(editor.List.hwnd, win.LB_SETTOPINDEX, uintptr(idx), 0)
+	setRedraw(editor.List.hwnd, true)
+	blUpdatingListbox = false
+	prevSel = idx
+	editor.Text.SetText(renderKeyValues(newEntity.KeyValues))
+	snap := snapshotEntities(ENTITIES)
+
+	go func() {
+		_ = saveEntities(strEntityFile, snap)
+		win.PostMessage(hwnd, WM_SAVE_COMPLETE, 0, uintptr(idx))
+	}()
 }
 
-func setRedraw(hwnd win.HWND, enable bool) {
-	if enable {
-		win.SendMessage(hwnd, win.WM_SETREDRAW, 1, 0)
-		win.InvalidateRect(hwnd, nil, true)
-	} else {
-		win.SendMessage(hwnd, win.WM_SETREDRAW, 0, 0)
+func onClone(hwnd win.HWND) {
+
+	sel := int(win.SendMessage(editor.List.hwnd, win.LB_GETCURSEL, 0, 0))
+
+	if sel < 0 || sel >= len(ENTITIES) {
+		return
 	}
+
+	orig := ENTITIES[sel]
+	clonedKV := make(map[string]string, len(orig.KeyValues))
+	maps.Copy(clonedKV, orig.KeyValues)
+	newEntity := Entity{KeyValues: clonedKV}
+	ENTITIES = append(ENTITIES, newEntity)
+
+	name := newEntity.KeyValues["classname"]
+
+	if name == "" {
+		name = "<no classname>"
+	}
+
+	blUpdatingListbox = true
+	setRedraw(editor.List.hwnd, false)
+	idx := editor.List.AddString(name)
+	win.SendMessage(editor.List.hwnd, win.LB_SETCURSEL, uintptr(idx), 0)
+	win.SendMessage(editor.List.hwnd, win.LB_SETTOPINDEX, uintptr(idx), 0)
+	setRedraw(editor.List.hwnd, true)
+	blUpdatingListbox = false
+	prevSel = idx
+	editor.Text.SetText(renderKeyValues(newEntity.KeyValues))
+
+	snap := snapshotEntities(ENTITIES)
+
+	go func() {
+		_ = saveEntities(strEntityFile, snap)
+		win.PostMessage(hwnd, WM_SAVE_COMPLETE, 0, uintptr(idx))
+	}()
+}
+
+func onDelete(hwnd win.HWND) {
+
+	sel := int(win.SendMessage(editor.List.hwnd, win.LB_GETCURSEL, 0, 0))
+
+	if sel < 0 || sel >= len(ENTITIES) {
+		return
+	}
+
+	ENTITIES = append(ENTITIES[:sel], ENTITIES[sel+1:]...)
+	blUpdatingListbox = true
+	setRedraw(editor.List.hwnd, false)
+	win.SendMessage(editor.List.hwnd, win.LB_DELETESTRING, uintptr(sel), 0)
+
+	if sel < len(ENTITIES) {
+
+		win.SendMessage(editor.List.hwnd, win.LB_SETCURSEL, uintptr(sel), 0)
+		win.SendMessage(editor.List.hwnd, win.LB_SETTOPINDEX, uintptr(sel), 0)
+		editor.Text.SetText(renderKeyValues(ENTITIES[sel].KeyValues))
+	} else {
+
+		win.SendMessage(editor.List.hwnd, win.LB_SETCURSEL, ^uintptr(0), 0)
+		win.SendMessage(editor.List.hwnd, win.LB_SETTOPINDEX, ^uintptr(0), 0)
+		prevSel = -1
+		editor.Text.SetText("")
+	}
+
+	setRedraw(editor.List.hwnd, true)
+	blUpdatingListbox = false
+	snap := snapshotEntities(ENTITIES)
+
+	go func() {
+		_ = saveEntities(strEntityFile, snap)
+		win.PostMessage(hwnd, WM_SAVE_COMPLETE, 0, uintptr(sel))
+	}()
+}
+
+func onSave(hwnd win.HWND) {
+
+	CloseMode = closeSilent
+	sel := int(win.SendMessage(editor.List.hwnd, win.LB_GETCURSEL, 0, 0))
+
+	if sel < 0 || sel >= len(ENTITIES) {
+		return
+	}
+
+	ENTITIES[sel].KeyValues = parseKeyValues(editor.Text.Text())
+	snap := snapshotEntities(ENTITIES)
+
+	go func() {
+		_ = saveEntities(strEntityFile, snap)
+		win.PostMessage(hwnd, WM_SAVE_COMPLETE, 0, uintptr(sel))
+	}()
 }

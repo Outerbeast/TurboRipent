@@ -33,4 +33,4 @@ type %HASHFILE%
 echo [INFO] Created launcher: %OUTFILE%-Editor.cmd
 
 endlocal
-::pause
+pause

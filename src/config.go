@@ -1,6 +1,6 @@
 /*
 	TurboRipent - TUI Frontend for Ripent / Lazyripent
-	Version 1.0
+	Version 1.1
 
 Copyright (C) 2025 Outerbeast
 This program is free software: you can redistribute it and/or modify
@@ -49,7 +49,7 @@ type Config struct {
 }
 
 func GetConfigPath() string {
-	return os.Getenv("LOCALAPPDATA")
+	return os.Getenv("LOCALAPPDATA") + "\\" + AppName
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -199,7 +199,13 @@ func StoreSettings() {
 		}
 	}
 
-	if err := SaveConfig(filepath.Join(GetConfigPath(), ConfFileName), cfg); err != nil {
+	configDir := GetConfigPath()
+
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		panic(err)
+	}
+
+	if err := SaveConfig(filepath.Join(configDir, ConfFileName), cfg); err != nil {
 		panic(err)
 	}
 }

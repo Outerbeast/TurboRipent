@@ -1,6 +1,6 @@
 /*
 	TurboRipent - TUI Frontend for Ripent / Lazyripent
-	Version 1.0
+	Version 1.1
 
 Copyright (C) 2025 Outerbeast
 This program is free software: you can redistribute it and/or modify
@@ -22,6 +22,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"os/exec"
@@ -33,45 +34,44 @@ import (
 func GetBSPS(strInput string) []string {
 
 	var BSPS []string
-	info, err := os.Stat(strInput)
+	normalizedPath := filepath.Clean(filepath.Join(strInput, ""))
+	info, err := os.Stat(normalizedPath)
 
-	if err == nil && info.IsDir() { // Do folder
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		LoudPanic("Something went wrong.", err)
+	}
 
-		ENTRIES, err := os.ReadDir(strInput + "\\")
+	var scanPath string
+
+	if err == nil && info.IsDir() {
+		scanPath = normalizedPath
+	} else if strInput == "" {
+		scanPath = "."
+	}
+
+	if scanPath != "" {
+
+		ENTRIES, err := os.ReadDir(scanPath)
 
 		if err != nil {
-			panic(err)
+			LoudPanic("Something went wrong.", err)
 		}
 
 		for _, entry := range ENTRIES {
 
-			if entry.Type().IsRegular() && strings.HasSuffix(entry.Name(), ".bsp") {
-				BSPS = append(BSPS, entry.Name())
+			name := entry.Name()
+
+			if entry.Type().IsRegular() && strings.HasSuffix(name, ".bsp") {
+				BSPS = append(BSPS, name)
 			}
 		}
-	} else if strInput == "" { // Not specified, do all in current folder
+	} else if strings.HasSuffix(strInput, "*") {
 
-		ENTRIES, err := os.ReadDir(".")
-
-		if err != nil {
-			panic(err)
-		}
-
-		for _, entry := range ENTRIES {
-
-			if entry.Type().IsRegular() && strings.HasSuffix(entry.Name(), ".bsp") {
-				BSPS = append(BSPS, entry.Name())
-			}
-		}
-	} else if strings.HasSuffix(strInput, "*") { // wildcard
-
-		strInput = strings.Replace(strInput, "*", "", 1)
-		dir := filepath.Dir(strInput)
-		prefix := filepath.Base(strInput)
-		entries, err := os.ReadDir(dir)
+		prefix := filepath.Base(normalizedPath)
+		entries, err := os.ReadDir(filepath.Dir(normalizedPath))
 
 		if err != nil {
-			panic(err)
+			LoudPanic("Something went wrong.", err)
 		}
 
 		for _, entry := range entries {
@@ -79,12 +79,11 @@ func GetBSPS(strInput string) []string {
 			name := entry.Name()
 
 			if entry.Type().IsRegular() && strings.HasPrefix(name, prefix) && strings.HasSuffix(name, ".bsp") {
-				BSPS = append(BSPS, filepath.Join(dir, name))
+				BSPS = append(BSPS, name)
 			}
 		}
-
-	} else { // Its a single BSP file.
-		BSPS = append(BSPS, strInput)
+	} else {
+		BSPS = append(BSPS, filepath.Base(normalizedPath))
 	}
 
 	return BSPS
@@ -93,7 +92,7 @@ func GetBSPS(strInput string) []string {
 func RipEntities(strBspName string, strArg string, blVerbose bool) {
 
 	if STR_EXES[0] == "" {
-		panic("Ripent is not installed")
+		LoudPanic("Ripent is not installed.", nil)
 	} else {
 		fmt.Printf(ColouriseText("Executing %s: '%s'\n", Grey, ""), strArg, STR_EXES[0])
 	}
@@ -108,13 +107,20 @@ func RipEntities(strBspName string, strArg string, blVerbose bool) {
 	var countSuccess, countFail byte
 
 	for _, bsp := range BSPS {
-
 		fmt.Printf(ColouriseText("Processing BSP: %s\n", Cyan, ""), bsp)
+
 		// Get the absolute path for the BSP file
-		BSPPath := filepath.Join(strBspName, bsp)
+		var BSPPath string
+		if filepath.Ext(strBspName) == ".bsp" || len(BSPS) == 1 {
+			BSPPath = bsp
+		} else {
+			BSPPath = filepath.Join(strBspName, bsp)
+		}
+
 		absBSPPath, err := filepath.Abs(BSPPath)
 
 		if err != nil {
+
 			fmt.Printf(ColouriseText("⚠️ Error getting absolute path for %s: %s\n", Yellow, ""), BSPPath, err)
 			continue
 		}
@@ -142,6 +148,7 @@ func RipEntities(strBspName string, strArg string, blVerbose bool) {
 		err = cmdRipent.Run()
 
 		if err != nil {
+
 			fmt.Printf(ColouriseText("❌ Error processing %s: %s\n", Red, ""), absBSPPath, err)
 			countFail++
 		} else {

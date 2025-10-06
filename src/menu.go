@@ -1,6 +1,6 @@
 /*
 	TurboRipent - TUI Frontend for Ripent / Lazyripent
-	Version 1.0
+	Version 1.1
 
 Copyright (C) 2025 Outerbeast
 This program is free software: you can redistribute it and/or modify
@@ -50,7 +50,7 @@ type Option struct {
 	Name, Argument, Description string
 }
 
-func ClearTerminal() {
+func ClearTerminal() error {
 
 	var pCmd *exec.Cmd
 
@@ -61,7 +61,8 @@ func ClearTerminal() {
 	}
 
 	pCmd.Stdout = os.Stdout
-	pCmd.Run()
+
+	return pCmd.Run()
 }
 
 func GetKeyStroke() rune { // Keystroke listener
@@ -92,7 +93,12 @@ func GetPromptInput(prompt string) string {
 	fmt.Print("\033[32m>\033[0m ")
 
 	reader := bufio.NewReader(os.Stdin)
-	line, _ := reader.ReadString('\n')
+	line, err := reader.ReadString('\n')
+
+	if err != nil {
+		LoudPanic("Something went wrong.", err)
+	}
+
 	line = strings.TrimSpace(line)
 
 	// Remove surrounding quotes if present
@@ -120,7 +126,7 @@ func DisplayMenu() bool { // TUI menu - return true if menu should remain open, 
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 
 	if err != nil {
-		panic(err)
+		LoudPanic("Something went wrong.", err)
 	}
 
 	defer term.Restore(int(os.Stdin.Fd()), oldState)
@@ -137,9 +143,9 @@ func DisplayMenu() bool { // TUI menu - return true if menu should remain open, 
 		fmt.Printf("\t[%c] %s\n", option.Input, option.Name)
 	}
 	// Receive option from user
-	var pSelectedOpt Option = MENU[0]
+	var choice Option = MENU[0]
 
-	for pSelectedOpt == MENU[0] {
+	for choice == MENU[0] {
 
 		keyPressed := GetKeyStroke()
 
@@ -151,13 +157,13 @@ func DisplayMenu() bool { // TUI menu - return true if menu should remain open, 
 
 			if MENU[i].Input == keyPressed {
 
-				pSelectedOpt = MENU[i]
+				choice = MENU[i]
 				break
 			}
 		}
 	}
 
-	switch pSelectedOpt.Input {
+	switch choice.Input {
 
 	case 'h', 'H':
 		{
@@ -181,7 +187,7 @@ func DisplayMenu() bool { // TUI menu - return true if menu should remain open, 
 		}
 
 	default:
-		fmt.Printf(ColouriseText("Selected: %s\n", Blue, ""), pSelectedOpt.Name)
+		fmt.Printf(ColouriseText("Selected: %s\n", Blue, ""), choice.Name)
 	}
 	// Move terminal restore BEFORE Scanln
 	term.Restore(int(os.Stdin.Fd()), oldState)
@@ -191,11 +197,11 @@ func DisplayMenu() bool { // TUI menu - return true if menu should remain open, 
 		return true
 	}
 
-	if pSelectedOpt.Argument == "-edit" && strings.HasSuffix(chosenBSP, ".bsp") {
+	if choice.Argument == "-edit" && strings.HasSuffix(chosenBSP, ".bsp") {
 
 		if STR_EXES[1] == "" {
 
-			fmt.Printf(ColouriseText("Warning: Lazyripent is not installed.\n%s requires Lazyripent to work. Please download and install and Lazyripent then launch the application again", Yellow, ""), pSelectedOpt.Name)
+			fmt.Printf(ColouriseText("Warning: Lazyripent is not installed.\n%s requires Lazyripent to work. Please download and install and Lazyripent then launch the application again", Yellow, ""), choice.Name)
 			return true
 		}
 
@@ -203,20 +209,20 @@ func DisplayMenu() bool { // TUI menu - return true if menu should remain open, 
 		return true
 	}
 
-	var rule *string
+	var pRule *string
 
-	if pSelectedOpt.Argument == "-rule" {
+	if choice.Argument == "-rule" {
 
 		if STR_EXES[1] == "" {
 
-			fmt.Printf(ColouriseText("Warning: Lazyripent is not installed.\n%s requires Lazyripent to work. Please download and install and Lazyripent then launch the application again", Yellow, ""), pSelectedOpt.Name)
+			fmt.Printf(ColouriseText("Warning: Lazyripent is not installed.\n%s requires Lazyripent to work. Please download and install and Lazyripent then launch the application again", Yellow, ""), choice.Name)
 			return true
 		}
 
 		input := GetPromptInput("Drag rule file or folder (leave blank to use the current folder, enter 'x' to cancel):")
-		rule = &input
+		pRule = &input
 
-		if *rule == "x" {
+		if *pRule == "x" {
 			return true
 		}
 	}
@@ -224,16 +230,13 @@ func DisplayMenu() bool { // TUI menu - return true if menu should remain open, 
 	_, err = term.MakeRaw(int(os.Stdin.Fd()))
 
 	if err != nil {
-		// Something bad happened, panic
-		fmt.Println(ColouriseText("\n\t(╯°□°)╯︵ ┻━┻\t\nPANIC - something went wrong.\n", Red, ""))
-		fmt.Printf(ColouriseText("Table Flippation: %s", Red, ""), err)
-		bufio.NewReader(os.Stdin).ReadBytes('\n')
+		LoudPanic("Something went wrong.", err)
 	}
 
-	if rule == nil {
-		RipEntities(chosenBSP, pSelectedOpt.Argument, blVerbose)
+	if pRule == nil {
+		RipEntities(chosenBSP, choice.Argument, blVerbose)
 	} else {
-		ApplyRule(*rule, chosenBSP)
+		ApplyRule(*pRule, chosenBSP)
 	}
 
 	return true
