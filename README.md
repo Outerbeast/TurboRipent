@@ -19,7 +19,7 @@ To get up to speed how to create a rule file, visit [this page](https://github.c
 ## Installation
 - Download the application from the [Releases](https://github.com/Outerbeast/TurboRipent/releases) section
 - Run the exe for initial setup, this will search for your Sven Co-op game install.
-Intial setup will save a config file (`TurboRipent_conf.json`) in `%LOCALAPPDATA%`
+Intial setup will save a config file (`TurboRipent_conf.json`) inside `%LOCALAPPDATA%\TurboRipent`
 
 The config file is in this structure:
 
@@ -57,6 +57,9 @@ Entity keyvalues are formatted as such
 ```
 key=value
 ```
+
+Under the entity list is a box where you can filter for a key or value, and the list will update to show only the entities that contain any matches to the input.
+
 Buttons:
 - **Create**: creates a new entity with the classname `new_entity`
 - **Clone**: makes a copy of the selected entity
