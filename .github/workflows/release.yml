@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        run: rustup default stable
+      
+      - name: Build
+        run: cmd /c build.cmd
+      
+      - name: Upload Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            *.exe
+            *.sha256.txt
+          draft: true
+          generate_release_notes: true
+
+  build-linux:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        run: rustup default stable
+      
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libfontconfig-dev libxcb-shape0-dev libxcb-xfixes0-dev
+      
+      - name: Build
+        run: bash build.sh
+      
+      - name: Upload Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            SCPluginManager
+            *.sha256.txt
+          draft: true
+          generate_release_notes: true
