@@ -1,36 +1,27 @@
 @echo off
 setlocal
-:: Check for Go
-where go >nul 2>nul
+:: Check for Rust installation
+where cargo >nul 2>nul
 if errorlevel 1 (
-    echo [ERROR] Go is not installed or not in PATH.
-    echo Please install Go from https://golang.org/dl/
-    pause
+    echo Rust is not installed. Please install Rust from https://rustup.rs/
     exit /b 1
 )
-:: Set paths
-set "SRCDIR=%~dp0%src"
-set "OUTFILE=TurboRipent"
-set "HASHFILE=%OUTFILE%.sha256.txt"
-:: Build
-go build -o "%OUTFILE%.exe" "%SRCDIR%"
+:: Build the project in release mode
+echo Building project...
+cargo build --release
+:: Check if build succeeded
 if errorlevel 1 (
-    echo [ERROR] Build failed.
-    pause
-    exit /b %ERRORLEVEL%
+    echo Build failed.
+    exit /b 1
 )
+:: Optional: copy binary to a friendly location
+set BIN_NAME=TurboRipent
+set DEST=%~dp0
 
-echo [OK] Build succeeded: %OUTFILE%
-:: Generate SHA256 checksum and save to file
-CertUtil -hashfile "%OUTFILE%.exe" SHA256 > "%HASHFILE%"
-echo [INFO] SHA256 checksum saved to: %HASHFILE%
-type %HASHFILE%
-:: --- Generate the minimised launcher CMD ---
-(
-    echo @echo off
-    echo "%%~dp0%OUTFILE%.exe" -edit "%%~1"
-) > "%OUTFILE%-Editor.cmd"
-echo [INFO] Created launcher: %OUTFILE%-Editor.cmd
+mkdir %DEST% >nul 2>nul
+copy target\release\%BIN_NAME%.exe %DEST% >nul
+CertUtil -hashfile "%~dp0%BIN_NAME%.exe" SHA256 > "%~dp0%BIN_NAME%.exe.sha256.txt"
 
+echo Build complete. The executable is located at %DEST%\%BIN_NAME%.exe
+type "%~dp0%BIN_NAME%.exe.sha256.txt"
 endlocal
-pause

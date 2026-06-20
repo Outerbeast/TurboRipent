@@ -1,72 +1,73 @@
 # TurboRipent
-![alt text](https://github.com/Outerbeast/TurboRipent/blob/main/preview.png?raw=true)
+![alt text](https://github.com/Outerbeast/TurboRipent/blob/main/menu_preview.png?raw=true)
 Turbocharged entity ripping
 ## Features
-This is a TUI frontend for Ripent and [Lazyripent](https://github.com/Zode/Lazyripent2) which allow you to extract and import BSP entity data files quickly and easily
+A standalone TUI application for extracting, importing, and editing BSP entity data files
 Includes a basic entity editor for quick edits:
 
 - Extraction and Importing entity (.ent) files
-- Applying Lazyripent rules (.rule) files
+- Split extraction/import (.entp / .entm)
 - Editor mode
-
-Other Ripent available features such as:
-- Texture import/export
-- Print BSP statistics (.chart)
-- Print BSP extents information (.ext)
-
-To get up to speed how to create a rule file, visit [this page](https://github.com/Zode/Lazyripent2?tab=readme-ov-file#rule-file-syntax) to get details on rule file syntax.
+- Print BSP entity statistics (.log)
 
 ## Installation
 - Download the application from the [Releases](https://github.com/Outerbeast/TurboRipent/releases) section
-- Run the exe for initial setup, this will search for your Sven Co-op game install.
-Intial setup will save a config file (`TurboRipent_conf.json`) inside `%LOCALAPPDATA%\TurboRipent`
+- Run the executable
 
-The config file is in this structure:
-
-```JSON
-{
-  "RipentPath": "C:\\path\\to\\Ripent_x64.exe",
-  "LazyripentPath": "C:\\path\\to\\lazyripent.exe",
-  "Verbose": false,
-    "DefaultEntity": {
-    "angles": "0 0 0",
-    "classname": "info_null",
-    "origin": "0 0 0",
-    "spawnflags": "0"
-  }
-}
-```
-
-If the application is finding trouble finding Ripent and Lazyripent, you can delete this config file and launch the application again to find their location. If the issue persists, try setting the paths manually, making sure to follow the format shown above.
+and you're done.
 
 ## Usage
-- You can launch the application directly where you will be presented with menu with choices
 
-- Dragging BSP files onto the executable file will automatically extract the entity data from them as `.ent` files.
+### Interactive Menu
+Launching the application without arguments will display an interactive menu with the following options:
+- **Extract** — Extract an entity list (.ent) from a BSP file
+- **Import** — Import an entity list (.ent) into a BSP file
+- **Split Extract** — Extract separate .entp (point entities) and .entm (brush entities)
+- **Split Import** — Import .entp/.entm files into a BSP (both files required)
+- **Editor** — Open the graphical entity editor for a BSP or ENT file
+- **Stats** — Display BSP entity statistics (can save as .log)
+- **Help** — Show usage information
 
-- Dragging ENT files onto the executable file will automatically import the entity data into the corresponding BSP files, if those BSP files exist in the same folder as the ENT files
+You can change an option by pressing the Up/Down keys and selecting via Enter/Spacebar.
 
-- Dragging a BSP file onto `TurboRipent-Editor.cmd` will launch the BSP in the editor. You can also run the cmd file as is - TurboRipent will ask for a BSP to edit.
+After selecting an option you will be instructed to provide the necessary files and paths, which you can drag into the window or enter manually.
 
-### Editor
+### Quick Extract/Import
+Drag files onto the executable (or pass them as CLI arguments):
+
+- **.bsp** - Extract entity data as a `.ent` file
+- **.ent** - Import entity data into the corresponding `.bsp` (the `.ent` file is then deleted)
+- **.entp / .entm** - Import split entity data into the corresponding `.bsp` (both files deleted after import)
+
+Example:
+
+`level.bsp` -> `level.ent` (extract)
+`level.ent` -> Deleted after successful import, fails if `level.bsp` is missing.
+`level.entp` OR `level.ent` -> Deleted after successful import, fails if `level.bsp` is missing or if one of the brush/point entity pair is missing
+
+### Editor (Windows Only)
+
 ![alt text](https://github.com/Outerbeast/TurboRipent/blob/main/editor_preview.png?raw=true)
 
-With the built-in editor, it is possible to make quick entity edits to maps.
-All of the entities in the BSP, represented by classnames, will be listed on the left in the entity list. These entities are selectable - when selecting one the entity's keyvalues are displayed in the box on the right and can be edited.
-Entity keyvalues are formatted as such
+The editor is a simple graphical interface for viewing and editing entities within a BSP or ENT file.
+To launch the editor:
+`TurboRipent.exe -edit <file>` (or `-editor` / `-gui`) to launch the graphical editor.
+You may also drag a BSP or ENT file onto `TurboRipent-Editor.cmd`.
+
+All entities are listed by classname on the left. Selecting one displays its keyvalues on the right, formatted as:
 ```
 key=value
 ```
 
-Under the entity list is a box where you can filter for a key or value, and the list will update to show only the entities that contain any matches to the input.
+A filter box below the list allows searching by key or value — matching entities update in real time.
 
 Buttons:
-- **Create**: creates a new entity with the classname `new_entity`
-- **Clone**: makes a copy of the selected entity
-- **Delete**: deletes the selected entity
-- **Save** : saves changes and exits the editor
+- **Create** — Creates a new entity with classname `new_entity`
+- **Clone** — Duplicates the selected entity
+- **Delete** — Removes the selected entity
+- **Save** — Saves changes and exits the editor
 
-When closing the editor, via `X`, you will be prompted whether you want to confirm changes or not before exiting.
+Closing the editor via `X` prompts you to confirm changes. Clicking `Save` will save changes and exit.
 
 *<small>The editor is a work-in-progress which is why its very primitive and basic with not very many functions. The aim is to replace outdated applications like EntEd or BSPEdit, where entity data is simply displayed in plain text which makes entmapping difficult and error prone. Extensive feedback and testing is required.</small>
 
@@ -74,9 +75,7 @@ When closing the editor, via `X`, you will be prompted whether you want to confi
 
 ### Prerequisites
 
-- [Go toolchain](https://go.dev/dl/) installed (Go 1.25 or newer)
-- [Ripent](steam://launch/276160) - Obtained from the Sven Co-op SDK from Steam
-- [Lazyripent2](https://github.com/Zode/Lazyripent2) (not Lazyripent) - If this is missing the application will launch but applying `.rule`s and the editor will not function.
+- [Rust toolchain](https://rustup.rs/) installed
 
 ### Build Instructions
 1. [Download](https://github.com/Outerbeast/TurboRipent/archive/refs/heads/main.zip) or clone the repository:
@@ -85,13 +84,18 @@ When closing the editor, via `X`, you will be prompted whether you want to confi
 git clone https://github.com/Outerbeast/TurboRipent.git
 cd TurboRipent
 ```
-2. Run the build script:
+2. Build using the script:
 - Double-click `build.cmd` or run it manually:
 ```
 build.cmd
 ```
 
-The executable will be generated in the current directory.
+Alternatively, build directly with Cargo:
+```
+cargo build --release
+```
+
+The executable will be generated in `target/release/TurboRipent.exe`.
 
 ## License
 See [LICENSE](LICENSE) for details.
@@ -107,5 +111,8 @@ Thank you for using TurboRipent!
 - **Outerbeast** - Author
 - **Garompa** - Testing and feedback
 
-Special thanks to **Zode** for creating Lazyripent
+Terminal menu powered by:-
+- crossterm
+- dialoguer
 
+Editor powered by [Native Windows GUI](https://github.com/gabdube/native-windows-gui) - a big thanks to the NWG project for providing a Rust library to build native Windows applications.
