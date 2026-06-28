@@ -52,7 +52,8 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            SCPluginManager
+            TurboRipent
+            TurboRipent.desktop
             *.sha256.txt
           draft: true
           generate_release_notes: true
