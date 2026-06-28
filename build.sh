@@ -16,7 +16,15 @@ BIN_NAME="TurboRipent"
 DEST="$(dirname "$0")"
 
 cp "target/release/$BIN_NAME" "$DEST"
-cp "$BIN_NAME.desktop" "$DEST"
+cat > "$DEST/$BIN_NAME.desktop" << EOF
+[Desktop Entry]
+Name=$BIN_NAME
+Comment=BSP Entity ripping tool
+Exec=$BIN_NAME
+Terminal=true
+Type=Application
+Categories=Game;Utility;
+EOF
 
 sha256sum "$DEST/$BIN_NAME" > "$DEST/$BIN_NAME.sha256.txt"
 sha256sum "$DEST/$BIN_NAME.desktop" > "$DEST/$BIN_NAME.desktop.sha256.txt"

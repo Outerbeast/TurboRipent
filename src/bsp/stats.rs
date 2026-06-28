@@ -29,7 +29,6 @@ use std::
 
 use crate::
 {
-    APPNAME, 
     bsp::
     {
         BspFile,
@@ -56,8 +55,8 @@ impl EntityReport
 {
     pub fn generate(bsp: &BspFile) -> Self
     {
-        let model_count = bsp.slice_lump( LumpIdx::Models ).len() / 64;
         let ent_data = bsp.slice_lump( LumpIdx::Entities );
+        let model_count = bsp.slice_lump( LumpIdx::Models ).len() / 64;
         
         let all_ents =
         if let Some( &0 ) = ent_data.last()
@@ -76,7 +75,7 @@ impl EntityReport
         let mut point: usize = 0;
         let mut brush: usize = 0;
         let mut referenced = vec![false; model_count];
-        referenced[0] = true;
+        referenced[0] = true;// Worldspawn HAS to exist
 
         for ent in &entities
         {
@@ -98,10 +97,6 @@ impl EntityReport
             }
         }
 
-        let unused = ( 1..model_count )
-            .filter( |&i| !referenced[i] )
-        .collect();
-
         Self
         {
             path: bsp.path.clone(),
@@ -109,7 +104,7 @@ impl EntityReport
             point_entities: point,
             brush_entities: brush,
             total_brush_models: model_count,
-            unused_model_indices: unused,
+            unused_model_indices: ( 1..model_count ).filter( |&i| !referenced[i] ).collect(),
         }
     }
 }
@@ -118,7 +113,6 @@ impl Display for EntityReport
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result
     {
-        writeln!( f, "\n=== {} Entity Report ===", APPNAME )?;
         writeln!( f, "  File: {:?}", self.path )?;
         writeln!( f )?;
         writeln!( f, "  Point entities:         {:>5}", self.point_entities )?;

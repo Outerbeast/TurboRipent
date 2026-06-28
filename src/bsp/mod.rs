@@ -50,7 +50,8 @@ const HEADER_SIZE: usize = ( 8 * LumpIdx::COUNT ) + 4;
 const LUMP_ENTRY_SIZE: usize = 8;
 
 #[repr( usize )]
-#[derive( Debug, Clone, Copy, EnumCount )]
+#[derive( Clone, Copy, EnumCount )]
+#[cfg_attr( test, derive( Debug ) )]
 pub enum LumpIdx
 {
     Entities,
@@ -75,7 +76,8 @@ impl From<LumpIdx> for usize
     fn from(l: LumpIdx) -> usize { l as usize }
 }
 // Represents a single lump in the BSP file defined by its start offset and size.
-#[derive( Debug, Clone, Copy )]
+#[derive( Clone, Copy )]
+#[cfg_attr( test, derive( Debug ) )]
 pub struct Lump(pub i32, pub i32);// (start, length)
 
 impl Lump
@@ -94,7 +96,8 @@ impl Lump
     }
 }
 
-#[derive( Debug, Clone )]
+#[derive( Clone )]
+#[cfg_attr( test, derive( Debug ) )]
 pub struct BspHeader// BSP header - contains the offsets and sizes of all lumps in the file.
 {
     pub version: i32,
@@ -103,12 +106,12 @@ pub struct BspHeader// BSP header - contains the offsets and sizes of all lumps 
 
 impl BspHeader
 {
-    pub fn lump(&self, idx: LumpIdx) -> Lump
+    fn lump(&self, idx: LumpIdx) -> Lump
     {
         self.lumps[idx as usize]
     }
 
-    pub fn write_to(&self, buf: &mut [u8]) -> Result<()>
+    fn write_to(&self, buf: &mut [u8]) -> Result<()>
     {
         use std::io::Write;
         let mut buf = buf;
@@ -132,11 +135,11 @@ impl BspHeader
         let version = i32::from_le_bytes( data.get( 0..4 )
             .ok_or_else( || anyhow!( "Missing BSP version" ) )?
             .try_into()
-        .map_err( |e| anyhow!( "Invalid BSP version bytes: {}", e ) )? );
+        .map_err( |e| anyhow!( "Invalid BSP version bytes: {e}" ) )? );
 
         if version != VERSION
         {
-            bail!( "Unsupported BSP version: {}. Requires BSP version: {}.", version, VERSION );
+            bail!( "Unsupported BSP version: {version}. Requires BSP version: {VERSION}."  );
         }
 
         let mut lumps = [Lump(0, 0); LumpIdx::COUNT];
@@ -147,12 +150,12 @@ impl BspHeader
             let offset = i32::from_le_bytes( data.get( cursor..cursor + 4 )
                 .ok_or_else( || anyhow!( "Malformed BSP header" ) )?
                 .try_into()
-            .map_err( |e| anyhow!( "Malformed BSP header (offset): {}", e ) )? );
+            .map_err( |e| anyhow!( "Malformed BSP header (offset): {e}" ) )? );
 
             let length = i32::from_le_bytes( data.get( cursor + 4..cursor + 8 )
                 .ok_or_else( || anyhow!( "Malformed BSP header" ) )?
                 .try_into()
-            .map_err( |e| anyhow!( "Malformed BSP header (length): {}", e ) )? );
+            .map_err( |e| anyhow!( "Malformed BSP header (length): {e}" ) )? );
 
             *lump = Lump( offset, length );
             cursor += LUMP_ENTRY_SIZE;// Move to the next entry
@@ -162,6 +165,7 @@ impl BspHeader
     }
 }
 // BSP file as a whole with header, content and path
+#[derive( Clone )]
 pub struct BspFile
 {
     pub header: BspHeader,
@@ -180,7 +184,7 @@ impl BspFile
         {   // Check if the lump's end is beyond the buffer's end
             if lump.range().end > buf.len()
             {
-                bail!( "Lump {} out of bounds", i );
+                bail!( "Lump {i} out of bounds" );
             }
         }
 

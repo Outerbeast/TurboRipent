@@ -18,7 +18,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 fn main() -> std::io::Result<()>
 {
-    #[cfg(windows)]
+    #[cfg( windows )]
     {
         const PRODUCT_NAME: &str = env!( "CARGO_PKG_NAME" );
         const AUTHOR: &str = env!( "CARGO_PKG_AUTHORS" );

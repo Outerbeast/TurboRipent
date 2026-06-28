@@ -23,6 +23,7 @@ use std::
     fs
 };
 
+use anyhow::Result;
 use crossterm::style::Stylize;
 use native_windows_gui::
 {
@@ -35,8 +36,6 @@ use native_windows_gui::
     modal_message,
     stop_thread_dispatch
 };
-
-use anyhow::Result;
 
 use super::
 {
@@ -405,7 +404,10 @@ fn on_create(gui: &EditorWindow)
         gui.text.set_text( &render_key_values(&entities[idx] ) );
     });
 
-    save_entities( gui, &ENTITIES.with( |ent| ent.borrow().clone() ) ).ok();
+    if let Err( e ) = save_entities( gui, &ENTITIES.with( |ent| ent.borrow().clone() ) )
+    {
+        eprintln!( "❌ {}", format!( "Failed to save entities: {e}" ).red() );
+    }
 }
 
 fn on_clone(gui: &EditorWindow)
@@ -451,7 +453,10 @@ fn on_clone(gui: &EditorWindow)
             }
         });
 
-        save_entities( gui, &ENTITIES.with( |ent| ent.borrow().clone() ) ).ok();
+        if let Err( e ) = save_entities( gui, &ENTITIES.with( |ent| ent.borrow().clone() ) )
+        {
+            eprintln!( "❌ {}", format!( "Failed to save entities: {e}" ).red() );
+        }
     }
 }
 
@@ -538,7 +543,10 @@ fn on_delete(gui: &EditorWindow)
             }
         });
 
-        save_entities( gui, &ENTITIES.with( |e| e.borrow().clone() ) ).ok();
+        if let Err( e ) = save_entities( gui, &ENTITIES.with( |e| e.borrow().clone() ) )
+        {
+            eprintln!( "❌ {}", format!( "Failed to save entities: {e}" ).red() );
+        }
     }
 }
 
@@ -562,7 +570,10 @@ fn on_save(gui: &EditorWindow)
         });
     }
 
-    save_entities( gui, &ENTITIES.with( |ent| ent.borrow().clone() ) ).ok();
+    if let Err( e ) = save_entities( gui, &ENTITIES.with( |ent| ent.borrow().clone() ) )
+    {
+        eprintln!( "❌ {}", format!( "Failed to save entities: {e}" ).red() );
+    }
     // Exit the editor when saving
     stop_thread_dispatch();
 }

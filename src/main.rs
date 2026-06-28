@@ -19,7 +19,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 mod bsp;
 mod driver;
 mod exec;
-mod menu;
+mod cli;
 mod utils;
 #[cfg( windows )] mod editor;
 #[cfg( test )] mod tests;
@@ -30,16 +30,11 @@ fn main() -> std::process::ExitCode
 {
     match driver::run()
     {
-        Ok( () ) =>
-        {
-            println!( "Application ran successfully." );
-            std::process::ExitCode::SUCCESS
-        }
-
+        Ok( () ) => std::process::ExitCode::SUCCESS,
         Err( e ) =>
         {
             eprintln!( "Application error: {e}.\nPress any key to exit..." );
-            std::io::Write::flush( &mut std::io::stdout() ).unwrap_err();
+            std::io::Write::flush( &mut std::io::stdout() ).ok();
             let _ = std::io::Read::read_exact( &mut std::io::stdin(), &mut[0] );
 
             std::process::ExitCode::FAILURE

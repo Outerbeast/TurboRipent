@@ -61,7 +61,7 @@ pub fn hide_terminal()
     let hwnd = unsafe { GetConsoleWindow() };
     if !hwnd.is_null()
     {
-        unsafe { ShowWindow(hwnd, 0); } // SW_HIDE = 0
+        unsafe { ShowWindow( hwnd, 0 ); } // SW_HIDE = 0
     }
 }
 
@@ -80,9 +80,34 @@ pub fn show_terminal()
     let hwnd = unsafe { GetConsoleWindow() };
     if !hwnd.is_null()
     {
-        unsafe { ShowWindow(hwnd, 5); } // SW_SHOW = 5
-        unsafe { SetForegroundWindow(hwnd); }
+        unsafe { ShowWindow( hwnd, 5 ); } // SW_SHOW = 5
+        unsafe { SetForegroundWindow( hwnd ); }
     }
+}
+
+use std::str::FromStr;
+// Gets CLI arguments and values
+pub fn get_args<F: FromStr, V: FromStr + Default>() -> (Vec<F>, Vec<V>)
+{
+    let args: Vec<_> = std::env::args().skip( 1 ).collect();
+
+    if args.is_empty()
+    {
+        return ( vec![], vec![] );
+    }
+
+    let ( mut flags, mut values ) = ( vec![], vec![] );
+
+    for a in args
+    {
+        match a.parse()
+        {
+            Ok( f ) => flags.push( f ),// Is a flag
+            Err( _ ) => values.push( a.parse::<V>().unwrap_or_default() )// Is a value (file path)
+        }
+    }
+
+    ( flags, values )
 }
 
 pub fn remove_files(paths: &[std::path::PathBuf], some_extension: Option<&str>)

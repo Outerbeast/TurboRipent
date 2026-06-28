@@ -58,10 +58,10 @@ pub enum ImportSource
 {
     Text(String),
     File(PathBuf),
-    Split(PathBuf),
+    Split(PathBuf)
 }
 
-#[inline] pub fn is_brush_ent(ent_kvs: &Dictionary) -> bool
+#[inline] pub(crate) fn is_brush_ent(ent_kvs: &Dictionary) -> bool
 {
     ent_kvs.get( "classname" ).is_some_and( |c| c == "worldspawn" )
     || ent_kvs.get( "model" ).is_some_and( |m| m.starts_with( '*' ) && m.len() > 1 )
@@ -113,10 +113,131 @@ pub fn serialize_entities(entities: &[Dictionary]) -> String
             out.push_str( &format!( "\"{key}\" \"{value}\"\n" ) );
         }
 
-        out.push_str( "}\n\n" );
+        out.push_str( "}\n" );
     }
 
     out
+}
+
+pub(crate) fn normalise_entities(text: &str) -> String
+{   // Pass 1: Structural normalisation (quote-aware brace handling)
+    let mut struct_fixed = String::new();
+    let mut in_quote = false;
+    let mut depth: i32 = 0;
+
+    for c in text.chars()
+    {
+        match c
+        {
+            '\r' => continue,
+            '"' =>
+            { 
+                in_quote = !in_quote;
+                struct_fixed.push( c );
+            }
+
+            '{' if !in_quote =>
+            {
+                if !struct_fixed.is_empty() && !struct_fixed.ends_with( '\n' )
+                {
+                    struct_fixed.push( '\n' );
+                }
+
+                struct_fixed.push_str( "{\n" );
+                depth = depth.max( 0 ) + 1;
+            }
+
+            '}' if !in_quote =>
+            {
+                if !struct_fixed.ends_with( '\n' )
+                {
+                    struct_fixed.push( '\n' );
+                }
+
+                depth -= 1;
+                struct_fixed.push( c );
+                struct_fixed.push( '\n' );
+            }
+
+            _ if depth > 0 => struct_fixed.push( c ),
+            _ => { }
+        }
+    }
+
+    while depth > 0
+    {
+        struct_fixed.push_str( "}\n" );
+        depth -= 1;
+    }
+    // Pass 2: Per-line kvp fixing
+    let mut fixed = String::new();
+    let mut in_block = false;
+
+    for line in struct_fixed.lines()
+    {
+        let trimmed = line.trim();
+
+        if trimmed == "{"
+        {
+            in_block = true;
+            fixed.push_str( line );
+            fixed.push( '\n' );
+        }
+        else if trimmed == "}"
+        { 
+            in_block = false;
+            fixed.push_str( line );
+            fixed.push( '\n' );
+        }
+        else if in_block && !trimmed.is_empty()
+        {
+            let q: Vec<_> = trimmed.split( '"' ).collect();
+            match q.len() - 1
+            {
+                2 =>
+                {
+                    let key = q[1];
+                    if !q[2].trim().is_empty()
+                    {
+                        fixed.push_str( &format!( "\"{key}\" \"{}\"\n", q[2].trim() ) );
+                    }
+                }
+
+                3 => fixed.push_str( &format!( "\"{}\" \"{}\"\n", q[1], q[3] ) ),
+                4 =>
+                {
+                    fixed.push_str( line );
+                    fixed.push( '\n' );
+                }
+
+                5 ..= 7 =>
+                {
+                    let clean: String = q[3..q.len()-1].concat().chars().filter( |c| *c != '"' ).collect();
+                    if !clean.is_empty()
+                    {
+                        fixed.push_str( &format!( "\"{}\" \"{clean}\"\n", q[1] ) );
+                    }
+                }
+
+                _ =>
+                {
+                    let mut i = 0;
+                    while i + 3 < q.len() - 1
+                    {
+                        fixed.push_str( &format!( "\"{}\" \"{}\"\n", q[i + 1], q[i + 3] ) );
+                        i += 4;
+                    }
+                }
+            }
+        }
+        else
+        {
+            fixed.push_str( line );
+            fixed.push( '\n' );
+        }
+    }
+
+    fixed
 }
 // Extracts entity data from a BSP file to entity file
 pub fn extract(bsp: &BspFile, out: &Path, target: ExtractTarget) -> Result<()>
@@ -140,11 +261,14 @@ pub fn extract(bsp: &BspFile, out: &Path, target: ExtractTarget) -> Result<()>
 
     match target
     {
-        ExtractTarget::Single => fs::write( out, all_ents.as_bytes() ).map_err( Into::into ),
+        ExtractTarget::Single =>
+        {
+            fs::write( out, all_ents.as_bytes() )?;
+            Ok( () )
+        }
         ExtractTarget::Split =>// Split entities into point and brush entities into separate files
         {
-            let mut point_ents = String::new();
-            let mut brush_ents = String::new();
+            let( mut point_ents, mut brush_ents ) = ( String::new(), String::new() );
 
             for ( raw, dict ) in &parse_entity_blocks( all_ents )
             {
@@ -175,7 +299,7 @@ pub fn extract(bsp: &BspFile, out: &Path, target: ExtractTarget) -> Result<()>
 // This avoids BSP corruption.
 pub fn import(mut bsp: BspFile, source: ImportSource) -> Result<BspFile>
 {
-    let mut ent_txt = 
+    let ent_txt = 
     match source
     {
         ImportSource::Text( t ) => t,
@@ -205,14 +329,66 @@ pub fn import(mut bsp: BspFile, source: ImportSource) -> Result<BspFile>
         }
     };
 
-    if !ent_txt.ends_with( '\0' )
+    let ent_txt = normalise_entities( &ent_txt );
+    let mut entities: Vec<_> = parse_entity_blocks( &ent_txt )
+        .into_iter().map( |( _, d )| d ).collect();
+
+    let model_indices = bsp.slice_lump( LumpIdx::Models ).len() / 64;
+    entities.retain( |ent|
     {
-        ent_txt.push( '\0' );
+        let Some( m ) = ent.get( "model" ) else { return true };
+        let Some( s ) = m.strip_prefix( '*' ) else { return true };
+        let Ok( idx ) = s.parse::<usize>() else { return true };
+
+        if idx == 0 || idx < model_indices
+        {
+            return true;
+        }
+
+        let cn = ent.get( "classname" ).map( |s| s.as_str() ).unwrap_or( "<unknown>" );
+        eprintln!( "  [warning] entity \"{cn}\" references non-existent brush model *{idx}, discarding" );
+
+        false
+    });
+
+    let mut out = serialize_entities( &entities );
+
+    if !out.ends_with( '\0' )
+    {
+        out.push( '\0' );
     }
 
-    bsp.replace_lump( LumpIdx::Entities, ent_txt.as_bytes() )?;
+    bsp.replace_lump( LumpIdx::Entities, out.as_bytes() )?;
 
     Ok( bsp )
+}
+
+pub fn repair(bsporent_path: &Path) -> Result<()>
+{
+    match bsporent_path.extension().and_then( |ext| ext.to_str() )
+    {
+        Some( EXT_BSP ) =>
+        {
+            let bsp = BspFile::load( bsporent_path )?;
+            let text = str::from_utf8( bsp.slice_lump( LumpIdx::Entities ) )?;
+            import( bsp.clone(), ImportSource::Text( normalise_entities( text ) ) )?.save()?;
+            println!( "Repaired entities → {bsporent_path:?}" );
+
+            Ok( () )
+        }
+
+        Some( EXT_ENT ) | Some( EXT_POINT_ENT ) | Some( EXT_BRUSH_ENT ) =>
+        {
+            let text = fs::read_to_string( bsporent_path )?;
+            fs::write( bsporent_path, normalise_entities( &text ).as_bytes() )?;
+            println!( "Repaired entities → {bsporent_path:?}" );
+
+            Ok( () )
+        }
+
+        Some( s ) => bail!( "Unsupported file type '{s}'. Requires ENT/BSP" ),
+        None => bail!( "Unsupported file type. Requires ENT/BSP" )
+    }
 }
 // Decides automatically extraction/importation based on file type
 pub fn rip(bsporent_path: &Path) -> Result<()>
@@ -257,6 +433,8 @@ pub fn rip(bsporent_path: &Path) -> Result<()>
             Ok( () )
         }
 
-        _ => Ok( () )
+        Some( s ) => bail!( "Invalid file type '{s}'. Requires ENT/BSP" ),
+        None => bail!( "Invalid file type. Requires ENT/BSP" )
     }
 }
+

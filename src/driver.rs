@@ -18,10 +18,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 use std::
 {
-    env,
     io,
     path::PathBuf
 };
+
+use anyhow::Result;
 
 use crossterm::
 {
@@ -29,86 +30,121 @@ use crossterm::
     terminal
 };
 
-use anyhow::Result;
-
 use crate::
 {
     APPNAME,
-    bsp::ent::
+    bsp::ent,
+    clear_terminal,
+    exec,
+    cli::
     {
         self,
-        EXT_BRUSH_ENT,
-        EXT_BSP,
-        EXT_ENT,
-        EXT_POINT_ENT
-    }, 
-    clear_terminal,
-    menu
+        Menu
+    }
 };
 
 #[cfg( windows )] use crate::editor;
 
 pub fn run() -> Result<()>
-{   // Set console title
+{
     crossterm::execute!( io::stdout(), terminal::SetTitle( APPNAME ) )?;
-    // Print banner
     println!( "{}\nExtract and Import BSP entity data", APPNAME.on_green().bold().underline_white() );
-    // Check CLI args
-    if let args = env::args().skip( 1 ).collect::<Vec<_>>() && !args.is_empty()
+    let (args, paths) = crate::utils::get_args::<Menu, PathBuf>();
+
+    if args.contains( &Menu::Help )
     {
-        if matches!( args[0].as_str(), "-edit" | "-editor" | "-gui" )
+        Menu::help();
+        return Ok( () );
+    }
+
+    if args.contains( &Menu::Repair )
+    {
+        for p in &paths
         {
-            #[cfg( windows )]
+            if let Err( e ) = p.try_exists()
             {
-                if args.len() > 1
-                {
-                    editor::launch( &args[1] )?;
-                }
-                else
-                {
-                    eprintln!( "{}", "Please provide a BSP to edit e.g. '-edit bspfile.bsp'".yellow() );
-                    return Err( io::Error::new( io::ErrorKind::InvalidInput, "Missing BSP file path" ).into() );
-                }
+                eprintln!( "❌ {}", format!( "Error processing {p:?}: {e}" ).red() );
+                continue;
             }
 
-            #[cfg(not(windows))]
+            if let Err( e ) = ent::repair( p )
             {
-                eprintln!( "{}", "The editor is only available for Windows.".yellow() );
-                return Err( io::Error::new( io::ErrorKind::Unsupported, "Editor not available on this platform" ).into() );
+                eprintln!( "❌ {}", format!( "Error processing {p:?}: {e}" ).red() );
+                continue;
             }
         }
-        else// Handle quick extract/import/
+
+        return Ok( () );
+    }
+
+    if args.contains( &Menu::Stats )
+    {
+        for p in &paths
         {
-            for a in &args
+            if let Err( e ) = p.try_exists()
             {
-                let path = PathBuf::from( a );
-                
-                if path.try_exists().is_err()
+                eprintln!( "❌ {}", format!( "Error processing {p:?}: {e}" ).red() );
+                continue;
+            }
+
+            match exec::batch_stats( p )
+            {
+                Ok( reports ) =>
                 {
-                    eprintln!( "{}", "Error: {path:?} does not exist.".red() );
-                    continue;
+                    for ( report_path, report_txt ) in &reports
+                    {
+                        println!( "{report_path:?}:\n{report_txt}\n" );
+                    }
                 }
 
-                match path.extension().and_then( |ext| ext.to_str() )
-                {
-                    Some( EXT_BSP ) | 
-                    Some( EXT_ENT ) | 
-                    Some( EXT_POINT_ENT ) | 
-                    Some( EXT_BRUSH_ENT ) => ent::rip( &path )?,
-                    _ => continue
-                }
+                Err( e ) => eprintln!( "❌ {}", format!( "Stats failed for {p:?}: {e}" ).red() ),
             }
         }
+
+        return Ok( () );
     }
-    else// No args, display menu
+
+    #[cfg( windows )]
+    if args.contains( &Menu::Edit )
     {
-        while menu::show()?
+        let path = 
+        match paths.first()
         {
-            println!( "\nPress any key to return..." );
-            let _ = menu::get_keystroke();
-            clear_terminal!();
-        }
+            Some( p ) => p,
+            None => anyhow::bail!( "Please provide a BSP to edit e.g. '-edit bspfile.bsp'" )
+        };
+
+        editor::launch( path )?;
+
+        return Ok( () );
     }
-    
+    // Just act on BSPs/ENTs if no arg flags used
+    if !paths.is_empty()
+    {
+        for p in &paths
+        {
+            if let Err( e ) = p.try_exists()
+            {
+                eprintln!( "❌ {}", format!( "Error processing {p:?}: {e}" ).red() );
+                continue;
+            }
+
+            if let Err( e ) = ent::rip( p )
+            {
+                eprintln!( "❌ {}", format!( "Error processing {p:?}: {e}" ).red() );
+                continue;
+            }
+        }
+
+        return Ok( () );
+    }
+
+    while Menu::show()?
+    {
+        println!( "\nPress any key to return..." );
+        let _ = cli::get_keystroke();
+        clear_terminal!();
+    }
+
     Ok( () )
 }

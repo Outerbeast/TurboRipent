@@ -48,11 +48,11 @@ use crate::
 };
 
 // (w/h)
-pub const WINDOW_SIZE: (i32, i32) = ( 800, 505 );
-pub const BUTTON_SIZE: (i32, i32) = ( 80, 30 );
-pub const CLASSNAME_LIST_SIZE: (i32, i32) = ( 290, 460 );
-pub const PROPERTIES_BOX_SIZE: (i32, i32) = ( 490, 450 );
-pub const FILTER_BOX_SIZE: (i32, i32) = ( CLASSNAME_LIST_SIZE.0, 25 );
+const WINDOW_SIZE: (i32, i32) = ( 800, 505 );
+const BUTTON_SIZE: (i32, i32) = ( 80, 30 );
+const CLASSNAME_LIST_SIZE: (i32, i32) = ( 290, 460 );
+const PROPERTIES_BOX_SIZE: (i32, i32) = ( 490, 450 );
+const FILTER_BOX_SIZE: (i32, i32) = ( CLASSNAME_LIST_SIZE.0, 25 );
 
 #[derive( Default )]
 pub struct EditorWindow

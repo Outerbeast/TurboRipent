@@ -43,7 +43,7 @@ use native_windows_gui::
 
 use super::
 {
-    menu::get_prompt_input,
+    cli::get_prompt_input,
     utils::
     {
         hide_terminal,

@@ -40,15 +40,17 @@ use crate::
     bsp::
     {
         self,
-        BspFile, 
+        BspFile,
         ent::
         {
+            self,
             EXT_BSP,
-            EXT_ENT,
-        }
+            EXT_ENT
+        },
+        stats::EntityReport
     },
     current_dir_path,
-    menu::Menu
+    cli::Menu
 };
 // Collects BSP files from a directory and its subdirectories.
 pub fn collect_bsps(input: impl AsRef<Path>) -> Vec<PathBuf>
@@ -129,8 +131,7 @@ pub fn batch_ripent(bsp_fileordir_path: &Path, action: &Menu) -> Result<(Vec<Pat
         bail!( "No BSP files were found.\nIf you entered an '.{EXT_ENT}' file, you have to use the '.{EXT_BSP}' file instead." );
     }
 
-    let mut success = vec![];
-    let mut failed = vec![];
+    let( mut success, mut failed ) = ( vec![], vec![] );
 
     for b in &bsps
     {
@@ -146,6 +147,21 @@ pub fn batch_ripent(bsp_fileordir_path: &Path, action: &Menu) -> Result<(Vec<Pat
 
         println!( "{}", format!( "{action:?}ing: {bsp_path:?}" ).cyan() );
 
+        if matches!( action, Menu::Repair )
+        {
+            match ent::repair( &bsp_path )
+            {
+                Ok( () ) => success.push( bsp_path ),
+                Err( e ) =>
+                {
+                    eprintln!( "⚠️ {}", format!( "{action:?} failed for file {bsp_path:?}: {e}").yellow() );
+                    failed.push( bsp_path );
+                }
+            }
+            
+            continue;
+        }
+
         match BspFile::load( &bsp_path )
         {
             Ok( bsp_file ) =>
@@ -156,12 +172,18 @@ pub fn batch_ripent(bsp_fileordir_path: &Path, action: &Menu) -> Result<(Vec<Pat
                 match action
                 {
                     Menu::Extract => extract( &bsp_file, &ent_path, ExtractTarget::Single ),
-                    Menu::Import => import( bsp_file, ImportSource::File( ent_path ) )
-                        .and_then( |bsp| bsp.save().map_err( Into::into ) ),
+                    Menu::Import =>
+                    {
+                        import( bsp_file, ImportSource::File( ent_path ) )?.save()?;
+                        Ok( () )
+                    }
 
                     Menu::SplitExtract => extract( &bsp_file, &bsp_path.with_extension( "" ), ExtractTarget::Split ),
-                    Menu::SplitImport => import( bsp_file, ImportSource::Split( bsp_path.with_extension( "" ) ) )
-                        .and_then( |bsp| bsp.save().map_err( Into::into ) ),
+                    Menu::SplitImport =>
+                    {
+                        import( bsp_file, ImportSource::Split( bsp_path.with_extension( "" ) ) )?.save()?;
+                        Ok( () )
+                    }
 
                     _ => unreachable!()
                 };
@@ -190,4 +212,30 @@ pub fn batch_ripent(bsp_fileordir_path: &Path, action: &Menu) -> Result<(Vec<Pat
     }
 
     Ok( ( success, failed ) )
+}
+// Stat generation for BSP files, Result: collection of BSP file reports
+pub fn batch_stats(bsp_fileordir_path: &Path) -> Result<Vec<(PathBuf, String)>>
+{
+    let bsps = collect_bsps( bsp_fileordir_path );
+
+    if bsps.is_empty()
+    {
+        bail!( "No BSP files were found." );
+    }
+
+    let mut results = Vec::with_capacity( bsps.len() );
+
+    for b in &bsps
+    {
+        let report = 
+        match BspFile::load( b )
+        {
+            Ok( bsp ) => EntityReport::generate( &bsp ).to_string(),
+            Err( e ) => format!( "⚠️ {}", format!( "Failed to load {:?}: {e}", b ).yellow() ),
+        };
+        
+        results.push( ( b.clone(), report ) );
+    }
+
+    Ok( results )
 }
