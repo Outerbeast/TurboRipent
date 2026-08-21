@@ -1,6 +1,6 @@
 /*
 	TurboRipent - TUI Frontend for Ripent
-	Version 2.0
+	Version 2.1.0
 
 Copyright (C) 2025 Outerbeast
 This program is free software: you can redistribute it and/or modify
@@ -33,11 +33,7 @@ use crate::
     {
         BspFile,
         LumpIdx,
-        ent::
-        {
-            is_brush_ent,
-            parse_entity_blocks
-        }
+        ent::EntityDictionary
     }
 };
 
@@ -69,17 +65,16 @@ impl EntityReport
         };
 
         let all_ents = str::from_utf8( all_ents ).unwrap_or( "" );
-        let entities: Vec<_> = parse_entity_blocks( all_ents )
-            .into_iter().map( |(_, d)| d ).collect();
+        let entities = EntityDictionary::from_ent_txt( all_ents );
 
-        let mut point: usize = 0;
-        let mut brush: usize = 0;
+        let mut point = 0;
+        let mut brush = 0;
         let mut referenced = vec![false; model_count];
         referenced[0] = true;// Worldspawn HAS to exist
 
         for ent in &entities
         {
-            if is_brush_ent( ent )
+            if ent.get_model_index().is_some()
             {
                 brush += 1;
             }
@@ -88,9 +83,7 @@ impl EntityReport
                 point += 1;
             }
 
-            if let Some( model_val ) = ent.get( "model" )
-            && let Some( idx_str ) = model_val.strip_prefix( '*' )
-            && let Ok( idx ) = idx_str.parse::<usize>()
+            if let Some( idx ) = ent.get_model_index()
             && idx < model_count
             {
                 referenced[idx] = true;
@@ -104,7 +97,7 @@ impl EntityReport
             point_entities: point,
             brush_entities: brush,
             total_brush_models: model_count,
-            unused_model_indices: ( 1..model_count ).filter( |&i| !referenced[i] ).collect(),
+            unused_model_indices: ( 1..model_count ).filter( |&i| !referenced[i] ).collect()
         }
     }
 }

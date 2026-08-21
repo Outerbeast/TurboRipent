@@ -16,31 +16,23 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
-mod bsp;
-mod driver;
-mod exec;
-mod cli;
-mod prelude;
-mod utils;
-#[cfg( windows )] mod editor;
-#[cfg( test )] mod tests;
-
-pub const APPNAME: &str = env!( "CARGO_PKG_NAME" );
-
-fn main() -> std::process::ExitCode
+// Commonly shared crate-wide items, imported via `use crate::prelude::*;`
+pub use crate::
 {
-    if let Err( e ) = driver::run()
+    bsp::
     {
-        eprintln!( "Application error: {e}.\nPress any key to exit..." );
-        std::io::Write::flush( &mut std::io::stdout() ).ok();
-        let _ = std::io::Read::read_exact( &mut std::io::stdin(), &mut[0] );
-
-        std::process::ExitCode::FAILURE
-    }
-    else
-    {
-        std::process::ExitCode::SUCCESS
-    }
-}
-
-
+        BspFile,
+        ent::
+        {
+            EntityDictionary,
+            ExtractTarget,
+            ImportSource,
+            EXT_BSP,
+            EXT_ENT,
+            EXT_POINT_ENT,
+            EXT_BRUSH_ENT
+        },
+        stats::EntityReport
+    },
+    utils::HasExtension
+};

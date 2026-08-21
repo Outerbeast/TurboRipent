@@ -1,6 +1,6 @@
 /*
 	TurboRipent - TUI Frontend for Ripent
-	Version 2.0
+	Version 2.1.0
 
 Copyright (C) 2025 Outerbeast
 This program is free software: you can redistribute it and/or modify
@@ -16,14 +16,8 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
-use std::
-{
-    cell::RefCell,
-    collections::HashMap,
-    fs
-};
+use std::cell::RefCell;
 
-use anyhow::Result;
 use crossterm::style::Stylize;
 use native_windows_gui::
 {
@@ -33,606 +27,438 @@ use native_windows_gui::
     MessageIcons,
     MessageParams,
     bind_event_handler,
+    dispatch_thread_events,
     modal_message,
     stop_thread_dispatch
 };
 
-use super::
-{
-    Dictionary,
-    view::EditorWindow
-};
-
-use crate::bsp::
-{
-    ent,
-    BspFile
-};
+use super::view::EditorWindow;
+use crate::prelude::*;
 
 thread_local!
 {
-    pub static ENTITIES: RefCell<Vec<Dictionary>> = const { RefCell::new( vec![] ) };
-    static FILTERED_IDXS: RefCell<Vec<usize>> = const { RefCell::new( vec![] ) };
-    static PREV_SEL: RefCell<i32> = const { RefCell::new( -1 ) };
-    static UPDATING_LISTBOX: RefCell<bool> = const { RefCell::new( false ) };
+    static CTRL: RefCell<Option<EditorController>> = const { RefCell::new( None ) };
 }
 
-fn save_entities(gui: &EditorWindow, entities: &[Dictionary]) -> Result<()>
+macro_rules! with_controller
 {
-    use crate::bsp::ent::{EXT_BRUSH_ENT, EXT_ENT, EXT_POINT_ENT};
-    let text = ent::serialize_entities( entities );
-
-    match gui.file_path.extension().and_then( |ostr| ostr.to_str() )
+    ( $gui:expr, |$ctrl:ident, $app:ident| $body:expr ) =>
     {
-        Some( EXT_ENT ) | Some( EXT_POINT_ENT ) | Some( EXT_BRUSH_ENT ) =>
+        CTRL.with( |c|
         {
-            fs::write( &gui.file_path, &text )?;
-        }
-
-        _ =>
-        {
-            fs::write( gui.file_path.with_extension( EXT_ENT ), &text )?;
-            ent::import( BspFile::load( &gui.file_path )?, ent::ImportSource::Text( text ) )?.save()?;
-        }
-    }
-
-    Ok( () )
-}
-// Collection of entities by classname (used for the entity list)
-pub(crate) fn classnames_from_entities(entities: &[Dictionary]) -> Vec<String>
-{
-    entities
-        .iter()
-        .map( |kv|
-        {
-            kv.get( "classname" )
-                .cloned()
-                .filter( |s| !s.is_empty() )
-            .unwrap_or_else( || "<no classname>".to_string() )
-        })
-    .collect()
-}
-
-pub(crate) fn parse_key_values(s: &str) -> Dictionary
-{
-    let mut kvs = Dictionary::new();
-
-    for line in s.lines()
-    {
-        let line = line.trim();
-        if line.is_empty()
-        {
-            continue;
-        }
-
-        if let Some( eq_pos ) = line.find( '=' )
-        {
-            let key = line[..eq_pos].trim().to_string();
-            let val = line[eq_pos + 1..].trim().to_string();
-            kvs.insert( key, val );
-        }
-    }
-
-    kvs
-}
-// Function for rendering key-value pairs
-pub(crate) fn render_key_values(kvs: &Dictionary) -> String
-{
-    if kvs.is_empty()
-    {
-        return String::new();
-    }
-
-    let mut keys: Vec<_> = kvs.keys().collect();
-    keys.sort();
-    let mut buf = String::new();
-    
-    for (i, k) in keys.iter().enumerate()
-    {
-        buf.push_str( &format!( "{k}={}", kvs[*k] ) );
-
-        if i < keys.len() - 1
-        {
-            buf.push_str( "\r\n" );
-        }
-    }
-
-    buf
-}
-
-pub fn populate_listbox(gui: &EditorWindow)
-{
-    UPDATING_LISTBOX.with( |u| *u.borrow_mut() = true );
-    gui.list.clear();
-    FILTERED_IDXS.with( |f| f.borrow_mut().clear() );
-
-    ENTITIES.with( |ent|
-    {
-        let entities = ent.borrow();
-        let names = classnames_from_entities( &entities );
-
-        for (i, name) in names.iter().enumerate()
-        {
-            gui.list.push( name.clone() );
-            FILTERED_IDXS.with( |f| f.borrow_mut().push( i ) );
-        }
-    });
-
-    UPDATING_LISTBOX.with( |u| *u.borrow_mut() = false );
-
-    if !FILTERED_IDXS.with( |f| f.borrow().is_empty() )
-    {
-        gui.list.set_selection( Some( 0 ) );
-        if let Some( sel ) = gui.list.selection()
-        {
-            FILTERED_IDXS.with( |fi|
+            if let Some( ref mut $ctrl ) = *c.borrow_mut()
             {
-                if let filtered = fi.borrow() && sel < filtered.len()
-                {
-                    let idx = filtered[sel];
-                    ENTITIES.with( |e|
-                    {
-                        if let entities = e.borrow() && idx < entities.len()
-                        {
-                            gui.text.set_text( &render_key_values( &entities[idx] ) );
-                        }
-                    });
-                }
+                let $app = $gui;
+                $body
+            }
+        })
+    };
+}
+
+pub(crate) struct EditorController
+{
+    entities: Vec<EntityDictionary>,
+    saved: Vec<EntityDictionary>,
+    filtered_idxs: Vec<usize>,
+    prev_sel: i32,
+    updating_listbox: bool
+}
+
+impl EditorController
+{
+    pub fn new(gui: &'static EditorWindow, entities: Vec<EntityDictionary>) -> Self
+    {
+        let handle = gui.window.handle;
+
+        bind_event_handler( &handle, &handle, move |evt, event_data, hwnd|
+        {
+            match evt
+            {
+                Event::OnButtonClick if hwnd == gui.btn_create.handle => with_controller!( gui, |ctrl, app| ctrl.on_create( app ) ),
+                Event::OnButtonClick if hwnd == gui.btn_clone.handle => with_controller!( gui, |ctrl, app| ctrl.on_clone( app ) ),
+                Event::OnButtonClick if hwnd == gui.btn_delete.handle => with_controller!( gui, |ctrl, app| ctrl.on_delete( app ) ),
+                Event::OnButtonClick if hwnd == gui.btn_save.handle => with_controller!( gui, |ctrl, app| ctrl.on_save( app ) ),
+                Event::OnButtonClick => { }
+                Event::OnListBoxSelect if hwnd == gui.list.handle => with_controller!( gui, |ctrl, app| ctrl.on_list_select( app ) ),
+                Event::OnTextInput if hwnd == gui.text.handle => with_controller!( gui, |ctrl, app| ctrl.on_text_change( app ) ),
+                Event::OnTextInput if hwnd == gui.filter.handle => with_controller!( gui, |ctrl, app| ctrl.apply_filter( app ) ),
+                Event::OnTextInput => { }
+                Event::OnWindowClose => with_controller!( gui, |ctrl, app| ctrl.on_close( app, &event_data ) ),
+                _ => { }
+            }
+        });
+
+        Self
+        {
+            saved: entities.clone(),
+            entities,
+            filtered_idxs: vec![],
+            prev_sel: -1,
+            updating_listbox: false
+        }
+    }
+    /// Binds the controller to the GUI and populates the listbox with the entity names.
+    /// This should be called after the GUI has been created.
+    /// Finally, it starts the event loop.
+    pub fn register(self, gui: &'static EditorWindow)
+    {
+        CTRL.with( |c| *c.borrow_mut() = Some( self ) );
+        with_controller!( gui, |ctrl, app| ctrl.populate_listbox( app ) );
+        dispatch_thread_events();
+    }
+
+    fn save(&mut self, gui: &EditorWindow)
+    {
+        if let Err( e ) = EntityDictionary::save_entities( &self.entities, &gui.file_path )
+        {
+            let title = "Error";
+            let content = format!( "Failed to save entities: {e}" );
+
+            let _ = modal_message( &gui.window, &MessageParams
+            { 
+                title,
+                content: &content,
+                buttons: MessageButtons::Ok,
+                icons: MessageIcons::Error
             });
+
+            eprintln!( "❌ {}", content.red() )
+        }
+        else
+        {
+            self.saved = self.entities.clone()
+        }
+    }
+
+    fn populate_listbox(&mut self, gui: &EditorWindow)
+    {
+        self.updating_listbox = true;
+        gui.list.clear();
+        self.filtered_idxs.clear();
+
+        for (i, name) in self.entities.iter().map( |e| e.get_classname() ).enumerate()
+        {
+            gui.list.push( name.to_string() );
+            self.filtered_idxs.push( i );
         }
 
-        PREV_SEL.with( |p| *p.borrow_mut() = 0 );
-    }
-}
-// Updates the listbox automatically when the filter changes
-fn apply_filter(gui: &EditorWindow)
-{
-    let filter = gui.filter.text().trim().to_lowercase();
-    UPDATING_LISTBOX.with( |u| *u.borrow_mut() = true );
-    gui.list.clear();
-    FILTERED_IDXS.with(|f| f.borrow_mut().clear() );
+        self.updating_listbox = false;
 
-    ENTITIES.with( |ent|
+        if !self.filtered_idxs.is_empty()
+        {
+            gui.list.set_selection( Some( 0 ) );
+
+            if let Some( sel ) = gui.list.selection()
+            && let Some( &idx ) = self.filtered_idxs.get( sel )
+            && let Some( entity ) = self.entities.get( idx )
+            {
+                gui.text.set_text( &entity.render_keyvalues().unwrap_or_default() );
+            }
+                
+            self.prev_sel = 0;
+        }
+    }
+
+    fn apply_filter(&mut self, gui: &EditorWindow)
     {
-        let entities = ent.borrow();
+        let filter = gui.filter.text().trim().to_lowercase();
+        self.updating_listbox = true;
+        gui.list.clear();
+        self.filtered_idxs.clear();
 
         if filter.is_empty()
         {
-            for (i, name) in classnames_from_entities( &entities ).iter().enumerate()
+            for (i, name) in self.entities.iter().map( |e| e.get_classname() ).enumerate()
             {
-                gui.list.push( name.clone() );
-                FILTERED_IDXS.with( |f| f.borrow_mut().push( i ) );
+                gui.list.push( name.to_string() );
+                self.filtered_idxs.push( i );
             }
         }
         else
         {
-            for (i, ent) in entities.iter().enumerate()
+            for (i, ent) in self.entities.iter().enumerate()
             {
-                for (k, v) in ent
+                for (k, v) in ent.iter()
                 {
                     if k.to_lowercase().contains( &filter ) || v.to_lowercase().contains( &filter )
                     {
-                        let class = ent
-                            .get( "classname" )
-                            .cloned()
-                            .filter( |s| !s.is_empty() )
-                        .unwrap_or_else( || "<no classname>".to_string() );
-
-                        gui.list.push( class );
-                        FILTERED_IDXS.with( |f| f.borrow_mut().push( i ) );
+                        gui.list.push( ent.get_classname().to_string() );
+                        self.filtered_idxs.push( i );
 
                         break;
                     }
                 }
             }
         }
-    });
 
-    UPDATING_LISTBOX.with( |u| *u.borrow_mut() = false );
+        self.updating_listbox = false;
 
-    if !FILTERED_IDXS.with( |f| f.borrow().is_empty() )
-    {
-        gui.list.set_selection( Some( 0 ) );
-
-        if let Some( sel ) = gui.list.selection()
+        if !self.filtered_idxs.is_empty()
         {
-            FILTERED_IDXS.with( |fi|
+            gui.list.set_selection( Some( 0 ) );
+
+            if let Some( sel ) = gui.list.selection()
+            && let Some( &idx ) = self.filtered_idxs.get( sel )
+            && let Some( entity ) = self.entities.get( idx )
             {
-                if let filtered = fi.borrow() && sel < filtered.len()
-                {
-                    let idx = filtered[sel];
-                    ENTITIES.with( |ent|
-                    {
-                        if let entities = ent.borrow() && idx < entities.len()
-                        {
-                            gui.text.set_text( &render_key_values( &entities[idx] ) );
-                        }
-                    });
-                }
-            });
+                gui.text.set_text( &entity.render_keyvalues().unwrap_or_default() );
+            }
+
+            self.prev_sel = 0;
         }
-
-        PREV_SEL.with( |p| *p.borrow_mut() = 0 );
-    }
-    else
-    {
-        gui.list.set_selection( None );
-        gui.text.set_text( "" );
-        PREV_SEL.with( |p| *p.borrow_mut() = -1 );
-    }
-}
-
-fn on_list_select(gui: &EditorWindow)
-{
-    if UPDATING_LISTBOX.with( |u| *u.borrow() )
-    {
-        return;
-    }
-
-    if let Some( sel ) = gui.list.selection()
-    {
-        FILTERED_IDXS.with( |f|
+        else
         {
-            if let filtered = f.borrow() && sel < filtered.len()
-            {
-                let idx = filtered[sel];
-
-                PREV_SEL.with( |p|
-                {
-                    if let prev = *p.borrow() && prev >= 0
-                    {
-                        ENTITIES.with( |ent|
-                        {
-                            let mut entities = ent.borrow_mut();
-                            if ( prev as usize ) < entities.len()
-                            {
-                                entities[prev as usize] = parse_key_values( &gui.text.text() );
-                            }
-                        });
-                    }
-                });
-
-                ENTITIES.with( |ent|
-                {
-                    if let entities = ent.borrow() && idx < entities.len()
-                    {
-                        gui.text.set_text( &render_key_values( &entities[idx] ) );
-                    }
-                });
-
-                PREV_SEL.with( |p| *p.borrow_mut() = idx as i32 );
-            }
-        });
-    }
-}
-
-fn on_text_change(gui: &EditorWindow)
-{
-    if UPDATING_LISTBOX.with( |u| *u.borrow() )
-    {
-        return;
-    }
-
-    if let Some( sel ) = gui.list.selection()
-    {
-        FILTERED_IDXS.with( |f|
-        {
-            if let filtered = f.borrow() && sel < filtered.len()
-            {
-                let idx = filtered[sel];
-                ENTITIES.with( |ent|
-                {
-                    if let mut entities = ent.borrow_mut() && idx < entities.len()
-                    {
-                        entities[idx] = parse_key_values( &gui.text.text() );
-                    }
-                });
-
-                refresh_listbox_item( gui, sel as i32 );
-            }
-        });
-    }
-}
-
-fn refresh_listbox_item(gui: &EditorWindow, sel: i32)
-{
-    UPDATING_LISTBOX.with( |u| *u.borrow_mut() = true );
-
-    FILTERED_IDXS.with( |f|
-    {
-        if let filtered = f.borrow() && sel >= 0 && (sel as usize) < filtered.len()
-        {
-            let idx = filtered[sel as usize];
-            ENTITIES.with( |ent|
-            {
-                if let entities = ent.borrow() && idx < entities.len()
-                {
-                    let class = entities[idx]
-                        .get( "classname" )
-                        .cloned()
-                        .filter( |s| !s.is_empty() )
-                    .unwrap_or_else( || "<no classname>".to_string() );
-                    // Update the listbox item text
-                    let new_collection =
-                    {
-                        let collection = gui.list.collection();
-                        if (sel as usize) < collection.len()
-                        {
-                            let mut new_collection = collection.clone();
-                            new_collection[sel as usize] = class;
-                            Some( new_collection )
-                        }
-                        else
-                        {
-                            None
-                        }
-                    };
-                    if let Some( new_collection ) = new_collection
-                    {
-                        gui.list.set_collection( new_collection );
-                        gui.list.set_selection( Some( sel as usize ) );
-                    }
-                }
-            });
-        }
-    });
-
-    UPDATING_LISTBOX.with( |u| *u.borrow_mut() = false );
-}
-
-fn on_create(gui: &EditorWindow)
-{
-    let new_entity = HashMap::from( [( "classname".to_string(), "new_entity".to_string() )] );
-    ENTITIES.with( |ent|
-    {
-        let mut entities = ent.borrow_mut();
-        entities.push( new_entity );
-        let idx = entities.len() - 1;
-
-        let name = entities[idx]
-            .get( "classname" )
-            .cloned()
-            .filter( |s| !s.is_empty() )
-        .unwrap_or_else( || "<no classname>".to_string() );
-
-        UPDATING_LISTBOX.with( |u| *u.borrow_mut() = true );
-        gui.list.push( name );
-        FILTERED_IDXS.with( |f| f.borrow_mut().push( idx ) );
-        gui.list.set_selection( Some( gui.list.len() - 1 ) );
-        UPDATING_LISTBOX.with( |u| *u.borrow_mut() = false );
-        PREV_SEL.with( |p| *p.borrow_mut() = idx as i32 );
-        gui.text.set_text( &render_key_values(&entities[idx] ) );
-    });
-
-    if let Err( e ) = save_entities( gui, &ENTITIES.with( |ent| ent.borrow().clone() ) )
-    {
-        eprintln!( "❌ {}", format!( "Failed to save entities: {e}" ).red() );
-    }
-}
-
-fn on_clone(gui: &EditorWindow)
-{
-    if let Some( sel ) = gui.list.selection()
-    {
-        let idx = FILTERED_IDXS.with( |f|
-        {
-            if let filtered = f.borrow() && sel < filtered.len()
-            {
-                Some( filtered[sel] )
-            }
-            else
-            {
-                None
-            }
-        });
-
-        let Some( idx ) = idx else { return; };
-
-        ENTITIES.with( |ent|
-        {
-            if let mut entities = ent.borrow_mut() && idx < entities.len()
-            {
-                let cloned = entities[idx].clone();
-                entities.push( cloned );
-                let new_idx = entities.len() - 1;
-
-                let name = entities[new_idx]
-                    .get( "classname" )
-                    .cloned()
-                    .filter( |s| !s.is_empty() )
-                .unwrap_or_else( || "<no classname>".to_string() );
-
-                UPDATING_LISTBOX.with( |u| *u.borrow_mut() = true );
-                gui.list.push( name );
-                FILTERED_IDXS.with( |f| f.borrow_mut().push( new_idx ) );
-                gui.list.set_selection( Some( gui.list.len() - 1 ) );
-                UPDATING_LISTBOX.with( |u| *u.borrow_mut() = false );
-
-                PREV_SEL.with( |p| *p.borrow_mut() = new_idx as i32 );
-                gui.text.set_text( &render_key_values( &entities[new_idx] ) );
-            }
-        });
-
-        if let Err( e ) = save_entities( gui, &ENTITIES.with( |ent| ent.borrow().clone() ) )
-        {
-            eprintln!( "❌ {}", format!( "Failed to save entities: {e}" ).red() );
+            gui.list.set_selection( None );
+            gui.text.set_text( "" );
+            self.prev_sel = -1;
         }
     }
-}
 
-fn on_delete(gui: &EditorWindow)
-{
-    if let Some( sel ) = gui.list.selection()
+    fn on_list_select(&mut self, gui: &EditorWindow)
     {
-        let idx = FILTERED_IDXS.with( |f|
+        if self.updating_listbox
         {
-            if let filtered = f.borrow() && sel < filtered.len()
-            {
-                Some( filtered[sel] )
-            }
-            else
-            {
-                None
-            }
-        });
-
-        let Some( idx ) = idx else { return; };
-
-        ENTITIES.with( |ent|
-        {
-            if let mut entities = ent.borrow_mut() && idx < entities.len()
-            {
-                entities.remove( idx );
-                UPDATING_LISTBOX.with( |u| *u.borrow_mut() = true );
-                gui.list.remove( sel );
-                FILTERED_IDXS.with( |f| f.borrow_mut().remove( sel ) );
-                let new_len = gui.list.len();
-
-                if sel < new_len
-                {
-                    gui.list.set_selection( Some( sel ) );
-                    if let Some( new_sel ) = gui.list.selection()
-                    {
-                        let new_idx = FILTERED_IDXS.with( |fi|
-                        {
-                            if let filtered = fi.borrow() && new_sel < filtered.len()
-                            {
-                                Some( filtered[new_sel] )
-                            }
-                            else
-                            {
-                                None
-                            }
-                        });
-
-                        if let Some( new_idx ) = new_idx
-                        {
-                            gui.text.set_text( &render_key_values( &entities[new_idx] ) );
-                        }
-                    }
-                }
-                else if new_len > 0
-                {
-                    gui.list.set_selection( Some( new_len - 1 ) );
-                    if let Some( new_sel ) = gui.list.selection()
-                    {
-                        let new_idx = FILTERED_IDXS.with( |fi|
-                        {
-                            if let filtered = fi.borrow() && new_sel < filtered.len()
-                            {
-                                Some( filtered[new_sel] )
-                            }
-                            else
-                            {
-                                None
-                            }
-                        });
-
-                        if let Some( new_idx ) = new_idx
-                        {
-                            gui.text.set_text( &render_key_values( &entities[new_idx] ) );
-                        }
-                    }
-                }
-                else
-                {
-                    gui.text.set_text( "" );
-                    PREV_SEL.with( |p| *p.borrow_mut() = -1 );
-                }
-                UPDATING_LISTBOX.with( |u| *u.borrow_mut() = false );
-            }
-        });
-
-        if let Err( e ) = save_entities( gui, &ENTITIES.with( |e| e.borrow().clone() ) )
-        {
-            eprintln!( "❌ {}", format!( "Failed to save entities: {e}" ).red() );
-        }
-    }
-}
-
-fn on_save(gui: &EditorWindow)
-{
-    if let Some( sel ) = gui.list.selection()
-    {
-        FILTERED_IDXS.with( |f|
-        {
-            if let filtered = f.borrow() && sel < filtered.len()
-            {
-                let idx = filtered[sel];
-                ENTITIES.with( |ent|
-                {
-                    if let mut entities = ent.borrow_mut() && idx < entities.len()
-                    {
-                        entities[idx] = parse_key_values( &gui.text.text() );
-                    }
-                });
-            }
-        });
-    }
-
-    if let Err( e ) = save_entities( gui, &ENTITIES.with( |ent| ent.borrow().clone() ) )
-    {
-        eprintln!( "❌ {}", format!( "Failed to save entities: {e}" ).red() );
-    }
-    // Exit the editor when saving
-    stop_thread_dispatch();
-}
-// !-TODO-!: Validation needs to be done to check if there were any changes to even save before asking for confirmation.
-fn on_close(gui: &EditorWindow, event_data: &EventData)
-{
-    let choice = modal_message( &gui.window, &MessageParams
-    {
-        title: "Confirm changes",
-        content: &format!( "Save changes to {:?}?", gui.file_path.file_name().unwrap_or_default() ),
-        buttons: MessageButtons::YesNoCancel,
-        icons: MessageIcons::Question
-    });
-    
-    match choice
-    {
-        native_windows_gui::MessageChoice::Yes =>
-        if let Err( e ) = save_entities( gui, &ENTITIES.with( |ent| ent.borrow().clone() ) )
-        {
-            eprintln!( "❌ {}", format!( "Failed to save entities: {e}" ).red() );
-        }
-
-        native_windows_gui::MessageChoice::No => { },
-        _ =>
-        {
-            if let EventData::OnWindowClose(close_data) = event_data
-            {
-                close_data.close(false);
-            }
             return;
         }
-    }
-    // Exit the editor when saving
-    stop_thread_dispatch();
-}
 
-pub fn setup_event_handlers(gui: &'static EditorWindow)
-{
-    let handle = gui.window.handle;
+        let Some( sel ) = gui.list.selection() else { return };
+        let Some( &idx ) = self.filtered_idxs.get( sel ) else { return };
 
-    bind_event_handler( &handle, &handle, move |evt, event_data, hwnd|
-    {
-        match evt
+        if self.prev_sel >= 0
         {
-            Event::OnButtonClick if hwnd == gui.btn_create.handle => on_create( gui ),
-            Event::OnButtonClick if hwnd == gui.btn_clone.handle => on_clone( gui ),
-            Event::OnButtonClick if hwnd == gui.btn_delete.handle => on_delete( gui ),
-            Event::OnButtonClick if hwnd == gui.btn_save.handle => on_save( gui ),
-            Event::OnButtonClick => { }
+            let prev = self.prev_sel as usize;
 
-            Event::OnListBoxSelect if hwnd == gui.list.handle => { on_list_select( gui ); }
-
-            Event::OnTextInput if hwnd == gui.text.handle => { on_text_change( gui ); }
-            Event::OnTextInput if hwnd == gui.filter.handle => { apply_filter( gui ); }
-            Event::OnTextInput => { }
-
-            Event::OnWindowClose => { on_close( gui, &event_data ); }
-
-            _ => { }
+            if prev < self.entities.len()
+            {
+                self.entities[prev] = EntityDictionary::parse_keyvalues( &gui.text.text() );
+            }
         }
-    });
+
+        if let Some( entity ) = self.entities.get( idx )
+        {
+            gui.text.set_text( &entity.render_keyvalues().unwrap_or_default() );
+        }
+
+        self.prev_sel = idx as i32;
+    }
+
+    fn on_text_change(&mut self, gui: &EditorWindow)
+    {
+        if self.updating_listbox
+        {
+            return;
+        }
+
+        let Some( sel ) = gui.list.selection()
+        else
+        {
+            return
+        };
+
+        let Some( &idx ) = self.filtered_idxs.get( sel ) 
+        else
+        {
+            return
+        };
+
+        if idx < self.entities.len()
+        {
+            self.entities[idx] = EntityDictionary::parse_keyvalues( &gui.text.text() );
+        }
+
+        self.refresh_listbox_item( gui, sel as i32 );
+    }
+
+    fn refresh_listbox_item(&mut self, gui: &EditorWindow, sel: i32)
+    {
+        self.updating_listbox = true;
+
+        if sel >= 0 && (sel as usize) < self.filtered_idxs.len()
+        {
+            let idx = self.filtered_idxs[sel as usize];
+
+            if let Some( entity ) = self.entities.get( idx )
+            {
+                let new_collection =
+                {
+                    let collection = gui.list.collection();
+
+                    if (sel as usize) < collection.len()
+                    {
+                        let mut new_collection = collection.clone();
+                        new_collection[sel as usize] = entity.get_classname().to_string();
+                        Some( new_collection )
+                    }
+                    else
+                    {
+                        None
+                    }
+                };
+
+                if let Some( new_collection ) = new_collection
+                {
+                    gui.list.set_collection( new_collection );
+                    gui.list.set_selection( Some( sel as usize ) );
+                }
+            }
+        }
+
+        self.updating_listbox = false;
+    }
+    // ============ CALLBACKS ================
+    fn on_create(&mut self, gui: &EditorWindow)
+    {
+        let new_entity = EntityDictionary::new( "new_entity" );
+        self.entities.push( new_entity );
+        let idx = self.entities.len() - 1;
+
+        self.updating_listbox = true;
+        gui.list.push( self.entities[idx].get_classname().to_string() );
+        self.filtered_idxs.push( idx );
+        gui.list.set_selection( Some( gui.list.len() - 1 ) );
+        self.updating_listbox = false;
+        self.prev_sel = idx as i32;
+        gui.text.set_text( &self.entities[idx].render_keyvalues().unwrap_or_default() );
+
+        self.save( gui );
+    }
+
+    fn on_clone(&mut self, gui: &EditorWindow)
+    {
+        let Some( sel ) = gui.list.selection()
+        else
+        {
+            return
+        };
+
+        let Some( &idx ) = self.filtered_idxs.get( sel )
+        else
+        {
+            return
+        };
+
+        if idx >= self.entities.len()
+        {
+            return;
+        }
+
+        let cloned = self.entities[idx].clone();
+        self.entities.push( cloned );
+        let new_idx = self.entities.len() - 1;
+
+        self.updating_listbox = true;
+        gui.list.push( self.entities[new_idx].get_classname().to_string() );
+        self.filtered_idxs.push( new_idx );
+        gui.list.set_selection( Some( gui.list.len() - 1 ) );
+        self.updating_listbox = false;
+        self.prev_sel = new_idx as i32;
+        gui.text.set_text( &self.entities[new_idx].render_keyvalues().unwrap_or_default() );
+
+        self.save( gui );
+    }
+
+    fn on_delete(&mut self, gui: &EditorWindow)
+    {
+        let Some( sel ) = gui.list.selection()
+        else
+        {
+            return
+        };
+
+        let Some( &idx ) = self.filtered_idxs.get( sel )
+        else
+        {
+            return
+        };
+
+        if idx >= self.entities.len()
+        {
+            return;
+        }
+
+        self.entities.remove( idx );
+        self.updating_listbox = true;
+        gui.list.remove( sel );
+        self.filtered_idxs.remove( sel );
+        let new_len = gui.list.len();
+
+        if sel < new_len
+        {
+            gui.list.set_selection( Some( sel ) );
+
+            if let Some( new_sel ) = gui.list.selection()
+            && let Some( &new_idx ) = self.filtered_idxs.get( new_sel )
+            && let Some( entity ) = self.entities.get( new_idx )
+            {
+                gui.text.set_text( &entity.render_keyvalues().unwrap_or_default() );
+            }
+        }
+        else if new_len > 0
+        {
+            gui.list.set_selection( Some( new_len - 1 ) );
+
+            if let Some( new_sel ) = gui.list.selection()
+            && let Some( &new_idx ) = self.filtered_idxs.get( new_sel )
+            && let Some( entity ) = self.entities.get( new_idx )
+            {
+                gui.text.set_text( &entity.render_keyvalues().unwrap_or_default() );
+            }
+        }
+        else
+        {
+            gui.text.set_text( "" );
+            self.prev_sel = -1;
+        }
+
+        self.updating_listbox = false;
+        self.save( gui );
+    }
+
+    fn on_save(&mut self, gui: &EditorWindow)
+    {
+        if let Some( sel ) = gui.list.selection()
+        && let Some( &idx ) = self.filtered_idxs.get( sel )
+        && idx < self.entities.len()
+        {
+            self.entities[idx] = EntityDictionary::parse_keyvalues( &gui.text.text() );
+        }
+
+        self.save( gui );
+        stop_thread_dispatch();
+    }
+
+    fn on_close(&mut self, gui: &EditorWindow, event_data: &EventData)
+    {   // No changes to save, just exit
+        if self.entities == self.saved
+        {
+            stop_thread_dispatch();
+            return;
+        }
+
+        let choice = modal_message( &gui.window, &MessageParams
+        {
+            title: "Confirm changes",
+            content: &format!( "Save changes to {:?}?", gui.file_path.file_name().unwrap_or_default() ),
+            buttons: MessageButtons::YesNoCancel,
+            icons: MessageIcons::Question
+        });
+
+        match choice
+        {
+            native_windows_gui::MessageChoice::Yes => self.save( gui ),
+            native_windows_gui::MessageChoice::No => { }
+            _ =>
+            {   // Cancelled or closed with the X button, so go back
+                if let EventData::OnWindowClose( close_data ) = event_data
+                {
+                    close_data.close( false );
+                }
+
+                return;
+            }
+        }
+
+        stop_thread_dispatch();
+    }
 }
+

@@ -1,6 +1,6 @@
 ﻿/*
 	TurboRipent - TUI Frontend for Ripent
-	Version 2.0
+	Version 2.1.0
 
 Copyright (C) 2025 Outerbeast
 This program is free software: you can redistribute it and/or modify
@@ -19,26 +19,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 pub mod view;
 pub mod controller;
 
-use std::
+use std::path::
 {
-    fs,
-    path::
-    {
-        Path,
-        PathBuf
-    }
+    Path,
+    PathBuf
 };
 
 use anyhow::
 {
     Result,
     bail
-};
-
-use native_windows_gui::
-{
-    dispatch_thread_events,
-    init
 };
 
 use super::
@@ -49,29 +39,63 @@ use super::
         hide_terminal,
         show_terminal
     },
-    bsp::
-    {
-        ent::
-        {
-            Dictionary,
-            parse_entity_blocks,
-            EXT_BSP, 
-            EXT_BRUSH_ENT,
-            EXT_ENT,
-            EXT_POINT_ENT
-        },
-        BspFile,
-        LumpIdx
-    }
+    bsp::ent::EntityDictionary
 };
-// Launch the application with the given to BSP or ENT
+
+use crate::prelude::*;
+
+impl EntityDictionary
+{   /// This is used by the editor to construct entity dictionary from key=value pairs
+    pub fn parse_keyvalues(s: &str) -> Self
+    {
+        let mut kvs = Self::default();
+
+        for line in s.lines()
+        {
+            let line = line.trim();
+            if line.is_empty()
+            {
+                continue;
+            }
+
+            if let Some( eq_pos ) = line.find( '=' )
+            {
+                let key = line[..eq_pos].trim().to_string();
+                let val = line[eq_pos + 1..].trim().to_string();
+                kvs.insert( key, val );
+            }
+        }
+
+        kvs
+    }
+    /// This is used by the editor to render entity dictionary into a key=value line
+    /// Returns None if the dictionary is empty
+    pub fn render_keyvalues(&self) -> Option<String>
+    {
+        if self.is_empty()
+        {
+            return None;
+        }
+
+        let mut keys: Vec<_> = self.keys().collect();
+        keys.sort();
+
+        let body = keys
+            .iter()
+            .map( |k| format!( "{k}={}", self[*k] ) )
+            .collect::<Vec<_>>()
+        .join( "\r\n" );
+
+        Some( body )
+    }
+}
+/// Launch the application with the given to BSP or ENT
 pub fn launch(chosen_path: impl AsRef<Path>) -> Result<()>
 {
     let chosen_path = chosen_path.as_ref();
     let file_path =
-    if chosen_path.to_string_lossy().is_empty() || !matches!( chosen_path.extension()
-        .and_then( |ext| ext.to_str() ), 
-        Some( EXT_BSP ) | Some( EXT_ENT ) | Some( EXT_POINT_ENT ) | Some( EXT_BRUSH_ENT ) )
+    if chosen_path.to_string_lossy().is_empty() 
+    || !chosen_path.has_extension( &[EXT_BSP, EXT_ENT, EXT_POINT_ENT, EXT_BRUSH_ENT] )
     {
         let path_str =
         get_prompt_input( "Drag a BSP or ENT file you want to edit (enter 'x' to cancel):" );
@@ -90,39 +114,12 @@ pub fn launch(chosen_path: impl AsRef<Path>) -> Result<()>
 
     println!( "Opening: {file_path:?}" );
     hide_terminal();
-
-    let entity_dicts=
-    match file_path.extension().and_then( |ext| ext.to_str() )
-    {
-        Some( EXT_ENT ) | Some( EXT_POINT_ENT ) | Some( EXT_BRUSH_ENT ) =>// ENT file editing
-        {
-            parse_entity_blocks( &fs::read_to_string( &file_path )? )
-                .into_iter()
-                .map( |(_, dict)| dict )
-            .collect()
-        }
-        
-        Some( EXT_BSP ) =>
-        {
-            let bsp = BspFile::load( &file_path )?;
-            let lump_text = str::from_utf8( bsp.slice_lump( LumpIdx::Entities ) )?;
-            parse_entity_blocks( lump_text ).into_iter().map( |(_, dict)| dict ).collect()
-        }
-
-        _ => bail!( format!( "Unsupported file type '{:?}'", file_path.extension().unwrap_or_default() ) )
-        
-    };
-
-    controller::ENTITIES.with( |ent| *ent.borrow_mut() = entity_dicts );
+    let entity_dicts = EntityDictionary::load_entities( &file_path )?;
     // Launch the GUI
-    init()?;
-    let gui = view::EditorWindow::build( &file_path )?;
-    controller::setup_event_handlers( gui );
-    // Populate listbox after GUI is built
-    controller::populate_listbox( gui );
-    dispatch_thread_events();
+    let gui = view::EditorWindow::new( &file_path )?;
+    controller::EditorController::new( gui, entity_dicts ).register( gui );
     // Hide the GUI window so it doesn't obscure the console
-    #[cfg(target_os = "windows")]
+    #[cfg( target_os = "windows" )]
     if let Some( hwnd ) = gui.window.handle.hwnd()
     {
         unsafe extern "system"
@@ -130,7 +127,7 @@ pub fn launch(chosen_path: impl AsRef<Path>) -> Result<()>
             fn ShowWindow(hwnd: *mut std::ffi::c_void, nCmdShow: i32) -> i32;
         }
 
-        unsafe { ShowWindow( hwnd as *mut std::ffi::c_void, 0 ); } // SW_HIDE = 0
+        unsafe { ShowWindow( hwnd as *mut std::ffi::c_void, 0 ); }// SW_HIDE = 0
     }
 
     show_terminal();

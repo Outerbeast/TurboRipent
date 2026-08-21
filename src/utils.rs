@@ -1,6 +1,6 @@
 /*
 	TurboRipent - TUI Frontend for Ripent
-	Version 2.0
+	Version 2.1.0
 
 Copyright (C) 2025 Outerbeast
 This program is free software: you can redistribute it and/or modify
@@ -16,37 +16,55 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
-#[macro_export]
-macro_rules! alloc_leaked// Leak allocator: boxes the value, leaks it forever
+/// Leak allocator: boxes the value, leaks it forever
+#[macro_export] macro_rules! alloc_leaked
 {
     ( $value:expr ) =>
     {
         Box::leak( Box::new( $value ) )
     };
 }
-
-#[macro_export]
-macro_rules! current_dir_path
+/// Returns the current directory path, or "." if it fails.
+#[macro_export] macro_rules! current_dir_path
 {
     () =>
     {
-        env::current_dir().unwrap_or( PathBuf::from( "." ) )
+        cfg_select!
+        {
+            windows => std::env::current_dir().unwrap_or( std::path::PathBuf::from( "." ) ),
+            target_os = "linux" =>
+            {
+                std::env::current_exe()
+                    .ok()
+                    .and_then( |p| p.parent().map( |p| p.to_path_buf() ) )
+                    .filter( |p| p.is_dir() )
+                .unwrap_or_else( || std::env::current_dir().unwrap_or( std::path::PathBuf::from( "." ) ) )
+            }
+        }
     };
 }
 
-#[macro_export]
-macro_rules! clear_terminal
+#[macro_export] macro_rules! clear_terminal
 {
     () =>
     {
         {
-            use std::io::Write;
-            print!( "\x1bc" );
-            let _ = io::stdout().flush();
+            use crossterm::
+            {
+                cursor,
+                execute,
+                terminal::
+                {
+                    Clear,
+                    ClearType
+                }
+            };
+
+            let _ = execute!( std::io::stdout(), Clear( ClearType::All ), cursor::MoveTo( 0, 0 ) );
         }
     };
 }
-// Hide console window (Windows only)
+/// Hide console window (Windows only)
 #[cfg( target_os = "windows" )]
 pub fn hide_terminal()
 {
@@ -80,14 +98,18 @@ pub fn show_terminal()
     let hwnd = unsafe { GetConsoleWindow() };
     if !hwnd.is_null()
     {
-        unsafe { ShowWindow( hwnd, 5 ); } // SW_SHOW = 5
-        unsafe { SetForegroundWindow( hwnd ); }
+        unsafe
+        {
+            ShowWindow( hwnd, 5 ); // SW_SHOW = 5
+            SetForegroundWindow( hwnd );
+        }
     }
 }
-
-use std::str::FromStr;
-// Gets CLI arguments and values
-pub fn get_args<F: FromStr, V: FromStr + Default>() -> (Vec<F>, Vec<V>)
+/// Gets CLI arguments (flags) and values
+pub fn get_args<F, V>() -> (Vec<F>, Vec<V>)
+where
+    F: std::str::FromStr,
+    V: std::str::FromStr + Default
 {
     let args: Vec<_> = std::env::args().skip( 1 ).collect();
 
@@ -108,6 +130,25 @@ pub fn get_args<F: FromStr, V: FromStr + Default>() -> (Vec<F>, Vec<V>)
     }
 
     ( flags, values )
+}
+
+pub trait HasExtension
+{
+    fn has_extension(&self, extensions: &[&str]) -> bool;
+}
+
+impl<T: AsRef<std::path::Path>> HasExtension for T
+{   /// Checks if a string has any of the specified extensions
+    fn has_extension(&self, extensions: &[&str]) -> bool
+    {
+        let Some( ext ) = self.as_ref().extension().and_then( |e| e.to_str() )
+        else
+        {
+            return false;
+        };
+
+        extensions.iter().any( |e| ext.eq_ignore_ascii_case( e ) )
+    }
 }
 
 pub fn remove_files(paths: &[std::path::PathBuf], some_extension: Option<&str>)

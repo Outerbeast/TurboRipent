@@ -1,6 +1,6 @@
 /*
 	TurboRipent - TUI Frontend for Ripent
-	Version 2.0
+	Version 2.1.0
 
 Copyright (C) 2025 Outerbeast
 This program is free software: you can redistribute it and/or modify
@@ -13,7 +13,7 @@ but WITHOUT ANY WARRANTY; without even the implied warranty of
 MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 GNU General Public License for more details.
 
-You should have received a copy of the GNU General Public License
+You should have received a copy of the GNU General Public License 
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 pub(crate) mod ent;
@@ -22,16 +22,14 @@ pub(crate) mod stats;
 use std::
 {
     fs,
-    io::
-    {
-        self
-    },
+    io,
     ops,
     path::
     {
         Path,
         PathBuf
-    }
+    },
+    rc::Rc
 };
 
 use anyhow::
@@ -46,8 +44,8 @@ use strum::EnumCount;
 use strum_macros::EnumCount;
 
 const VERSION: i32 = 0x1E;// 30
-const HEADER_SIZE: usize = ( 8 * LumpIdx::COUNT ) + 4;
 const LUMP_ENTRY_SIZE: usize = 8;
+const HEADER_SIZE: usize = ( LumpIdx::COUNT * LUMP_ENTRY_SIZE ) + 4;
 
 #[repr( usize )]
 #[derive( Clone, Copy, EnumCount )]
@@ -75,7 +73,8 @@ impl From<LumpIdx> for usize
 {
     fn from(l: LumpIdx) -> usize { l as usize }
 }
-// Represents a single lump in the BSP file defined by its start offset and size.
+/// Represents a single lump in the BSP file defined by its start offset and size.
+#[repr( C )]
 #[derive( Clone, Copy )]
 #[cfg_attr( test, derive( Debug ) )]
 pub struct Lump(pub i32, pub i32);// (start, length)
@@ -95,10 +94,11 @@ impl Lump
         start..end
     }
 }
-
+/// BSP header - contains the offsets and sizes of all lumps in the file.
+#[repr( C )]
 #[derive( Clone )]
 #[cfg_attr( test, derive( Debug ) )]
-pub struct BspHeader// BSP header - contains the offsets and sizes of all lumps in the file.
+pub struct BspHeader
 {
     pub version: i32,
     pub lumps: [Lump; LumpIdx::COUNT]
@@ -111,11 +111,11 @@ impl BspHeader
         self.lumps[idx as usize]
     }
 
-    fn write_to(&self, buf: &mut [u8]) -> Result<()>
+    fn write_to(&self, mut buf: &mut [u8]) -> Result<()>
     {
         use std::io::Write;
-        let mut buf = buf;
         buf.write_all( &self.version.to_le_bytes() )?;
+        
         for &Lump( offset, length ) in &self.lumps
         {
             buf.write_all( &offset.to_le_bytes() )?;
@@ -129,7 +129,7 @@ impl BspHeader
     {
         if data.len() < HEADER_SIZE
         {
-            bail!( "File size doesn't match expected BSP version".to_string() );
+            bail!( "File size doesn't match expected BSP version" );
         }
 
         let version = i32::from_le_bytes( data.get( 0..4 )
@@ -164,12 +164,13 @@ impl BspHeader
         Ok( Self { version, lumps } )
     }
 }
-// BSP file as a whole with header, content and path
+/// BSP file as a whole with header, content and path
+#[repr( C )]
 #[derive( Clone )]
 pub struct BspFile
 {
     pub header: BspHeader,
-    pub content: Vec<u8>,
+    pub content: Rc<[u8]>,
     pub path: PathBuf
 }
 
@@ -188,7 +189,7 @@ impl BspFile
             }
         }
 
-        Ok( Self { content: buf, header, path: path.to_path_buf() } )
+        Ok( Self { content: buf.into(), header, path: path.to_path_buf() } )
     }
 
     pub fn slice_lump(&self, idx: LumpIdx) -> &[u8]
@@ -225,7 +226,7 @@ impl BspFile
         }
 
         self.header.write_to( &mut new_bsp[..] )?;
-        self.content = new_bsp;
+        self.content = new_bsp.into();
 
         Ok( () )
     }

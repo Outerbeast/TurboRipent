@@ -1,6 +1,6 @@
 /*
 	TurboRipent - TUI Frontend for Ripent
-	Version 2.0
+	Version 2.1.0
 
 Copyright (C) 2025 Outerbeast
 This program is free software: you can redistribute it and/or modify
@@ -18,7 +18,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 use std::
 {
-    env,
     fs,
     path::
     {
@@ -37,27 +36,17 @@ use crossterm::style::Stylize;
 
 use crate::
 {
-    bsp::
-    {
-        self,
-        BspFile,
-        ent::
-        {
-            self,
-            EXT_BSP,
-            EXT_ENT
-        },
-        stats::EntityReport
-    },
+    bsp::ent,
+    cli::Menu,
     current_dir_path,
-    cli::Menu
+    prelude::*
 };
 // Collects BSP files from a directory and its subdirectories.
 pub fn collect_bsps(input: impl AsRef<Path>) -> Vec<PathBuf>
 {
     let path = input.as_ref();
 
-    if !path.as_os_str().is_empty() && !path.is_dir() && path.extension().is_some_and( |ext| ext == EXT_BSP )
+    if !path.as_os_str().is_empty() && !path.is_dir() && path.has_extension( &[EXT_BSP] )
     {   
         return vec![path.to_path_buf()];
     }
@@ -97,7 +86,7 @@ pub fn collect_bsps(input: impl AsRef<Path>) -> Vec<PathBuf>
             for entry in entries.flatten()
             {
                 if !entry.file_type().is_ok_and( |ft| ft.is_file() )
-                || !&entry.path().extension().is_some_and( |ext| ext == EXT_BSP ) 
+                || !&entry.path().has_extension( &[EXT_BSP] )
                 {
                     continue;
                 }
@@ -119,7 +108,7 @@ pub fn collect_bsps(input: impl AsRef<Path>) -> Vec<PathBuf>
 // Extraction/importation of BSP files, Result: collection of success/failed BSPs
 pub fn batch_ripent(bsp_fileordir_path: &Path, action: &Menu) -> Result<(Vec<PathBuf>, Vec<PathBuf>)>
 {
-    if !matches!( action, Menu::Extract | Menu::Import | Menu::SplitExtract | Menu::SplitImport )
+    if !matches!( action, Menu::Extract | Menu::Import | Menu::SplitExtract | Menu::SplitImport | Menu::Repair )
     {
         bail!( "Invalid action '{:?}' for batch ripent", action );
     }
@@ -131,12 +120,12 @@ pub fn batch_ripent(bsp_fileordir_path: &Path, action: &Menu) -> Result<(Vec<Pat
         bail!( "No BSP files were found.\nIf you entered an '.{EXT_ENT}' file, you have to use the '.{EXT_BSP}' file instead." );
     }
 
-    let( mut success, mut failed ) = ( vec![], vec![] );
+    let( mut success, mut failed ) = ( Vec::with_capacity( bsps.len() ), Vec::with_capacity( bsps.len() ) );
 
     for b in &bsps
     {
         let bsp_path =
-        if bsp_fileordir_path.extension().is_some_and( |ext| ext == EXT_BSP ) || bsps.len() == 1
+        if bsp_fileordir_path.has_extension( &[EXT_BSP] ) || bsps.len() == 1
         {
             b.clone()
         }
@@ -149,14 +138,14 @@ pub fn batch_ripent(bsp_fileordir_path: &Path, action: &Menu) -> Result<(Vec<Pat
 
         if matches!( action, Menu::Repair )
         {
-            match ent::repair( &bsp_path )
+            if let Err( e ) = ent::repair( &bsp_path )
             {
-                Ok( () ) => success.push( bsp_path ),
-                Err( e ) =>
-                {
-                    eprintln!( "⚠️ {}", format!( "{action:?} failed for file {bsp_path:?}: {e}").yellow() );
-                    failed.push( bsp_path );
-                }
+                eprintln!( "⚠️ {}", format!( "{action:?} failed for file {bsp_path:?}: {e}" ).yellow() );
+                failed.push( bsp_path );
+            }
+            else
+            {
+                success.push( bsp_path );
             }
             
             continue;
@@ -166,38 +155,27 @@ pub fn batch_ripent(bsp_fileordir_path: &Path, action: &Menu) -> Result<(Vec<Pat
         {
             Ok( bsp_file ) =>
             {
-                use bsp::ent::*;
                 let ent_path = bsp_path.with_extension( EXT_ENT );
                 let result =
                 match action
                 {
-                    Menu::Extract => extract( &bsp_file, &ent_path, ExtractTarget::Single ),
-                    Menu::Import =>
-                    {
-                        import( bsp_file, ImportSource::File( ent_path ) )?.save()?;
-                        Ok( () )
-                    }
-
-                    Menu::SplitExtract => extract( &bsp_file, &bsp_path.with_extension( "" ), ExtractTarget::Split ),
-                    Menu::SplitImport =>
-                    {
-                        import( bsp_file, ImportSource::Split( bsp_path.with_extension( "" ) ) )?.save()?;
-                        Ok( () )
-                    }
-
+                    Menu::Extract => ExtractTarget::Single.with( &bsp_file, Some( &ent_path ) ).map( |_| () ),
+                    Menu::Import => Ok( ImportSource::Single( ent_path ).with( bsp_file )?.save()? ),
+                    Menu::SplitExtract => ExtractTarget::Split.with( &bsp_file, Some( &bsp_path.with_extension( "" ) ) ).map( |_| () ),
+                    Menu::SplitImport => Ok( ImportSource::Split( bsp_path.with_extension( "" ) ).with( bsp_file )?.save()? ),
                     _ => unreachable!()
                 };
 
-                match result
+                if let Err( e ) = result
                 {
-                    Ok( () ) => success.push( bsp_path ),
-                    Err( e ) =>
-                    {
-                        eprintln!( "⚠️ {}", format!( "{action:?} failed for file {bsp_path:?}: {e}").yellow() );
-                        failed.push( bsp_path );
+                    eprintln!( "⚠️ {}", format!( "{action:?} failed for file {bsp_path:?}: {e}" ).yellow() );
+                    failed.push( bsp_path );
 
-                        continue;
-                    }
+                    continue;
+                }
+                else
+                {
+                    success.push( bsp_path )
                 }
             }
 

@@ -1,6 +1,6 @@
 /*
 	TurboRipent - TUI Frontend for Ripent
-	Version 2.0
+	Version 2.1.0
 
 Copyright (C) 2025 Outerbeast
 This program is free software: you can redistribute it and/or modify
@@ -22,7 +22,11 @@ use std::
     path::PathBuf
 };
 
-use anyhow::Result;
+use anyhow::
+{
+    bail,
+    Result
+};
 
 use crossterm::
 {
@@ -40,7 +44,8 @@ use crate::
     {
         self,
         Menu
-    }
+    },
+    utils
 };
 
 #[cfg( windows )] use crate::editor;
@@ -49,7 +54,7 @@ pub fn run() -> Result<()>
 {
     crossterm::execute!( io::stdout(), terminal::SetTitle( APPNAME ) )?;
     println!( "{}\nExtract and Import BSP entity data", APPNAME.on_green().bold().underline_white() );
-    let (args, paths) = crate::utils::get_args::<Menu, PathBuf>();
+    let (args, paths) = utils::get_args::<Menu, PathBuf>();
 
     if args.contains( &Menu::Help )
     {
@@ -107,14 +112,55 @@ pub fn run() -> Result<()>
     #[cfg( windows )]
     if args.contains( &Menu::Edit )
     {
-        let path = 
-        match paths.first()
+        let Some( path ) = paths.first()
+        else
         {
-            Some( p ) => p,
-            None => anyhow::bail!( "Please provide a BSP to edit e.g. '-edit bspfile.bsp'" )
+            bail!( "Please provide a BSP to edit e.g. '-edit bspfile.bsp'" );
         };
 
         editor::launch( path )?;
+
+        return Ok( () );
+    }
+
+    const BATCH_ACTIONS: [Menu; 4] = [ Menu::Extract, Menu::Import, Menu::SplitExtract, Menu::SplitImport ];
+
+    if BATCH_ACTIONS.iter().any( |a| args.contains( a ) )
+    {
+        for action in &BATCH_ACTIONS
+        {
+            if !args.contains( action )
+            {
+                continue;
+            }
+
+            for p in &paths
+            {
+                if let Err( e ) = p.try_exists()
+                {
+                    eprintln!( "❌ {}", format!( "Error processing {p:?}: {e}" ).red() );
+                    continue;
+                }
+
+                match exec::batch_ripent( p, action )
+                {
+                    Ok( ( processed, failed ) ) =>
+                    {
+                        if !processed.is_empty()
+                        {
+                            println!( "✅ {}", format!( "{} BSP(s) processed.", processed.len() ).green() );
+                        }
+
+                        if !failed.is_empty()
+                        {
+                            eprintln!( "⚠️ {}", format!( "{} BSP(s) failed.", failed.len() ).yellow() );
+                        }
+                    }
+
+                    Err( e ) => eprintln!( "❌ {}", format!( "{action:?} failed for {p:?}: {e}" ).red() ),
+                }
+            }
+        }
 
         return Ok( () );
     }

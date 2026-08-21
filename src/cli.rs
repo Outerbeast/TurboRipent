@@ -1,6 +1,6 @@
 /*
 	TurboRipent - TUI Frontend for Ripent
-	Version 2.0
+	Version 2.1.0
 
 Copyright (C) 2025 Outerbeast
 This program is free software: you can redistribute it and/or modify
@@ -24,7 +24,6 @@ use std::
         Display
     },
     fs,
-    io,
     path::PathBuf
 };
 
@@ -70,14 +69,8 @@ use strum_macros::
 use crate::
 {
     APPNAME, 
-    bsp::ent::
-    {
-        EXT_BRUSH_ENT,
-        EXT_BSP,
-        EXT_ENT,
-        EXT_POINT_ENT
-    },
     exec,
+    prelude::*,
     utils
 };
 
@@ -214,7 +207,7 @@ impl Menu
 
         let chosen_bsp = // Passed in a ENT file, swap extension, want BSPs only
         if let path = PathBuf::from( &chosen_bsp ) 
-        && path.extension().is_some_and( |ext| ext == EXT_ENT || ext == EXT_POINT_ENT || ext == EXT_BRUSH_ENT )
+        && path.has_extension( &[EXT_ENT, EXT_POINT_ENT, EXT_BRUSH_ENT] )
         {
             path.with_extension( EXT_BSP )
         }
@@ -223,7 +216,7 @@ impl Menu
             PathBuf::from( &chosen_bsp )
         };
         // Open the BSP in the editor
-        #[cfg(windows)]
+        #[cfg( windows )]
         if matches!( choice, Self::Edit ) 
         {
             editor::launch( chosen_bsp )?;
@@ -237,7 +230,7 @@ impl Menu
             {
                 match exec::batch_ripent( &chosen_bsp, choice )
                 {
-                    Ok( processed) =>
+                    Ok( processed ) =>
                     {
                         if !processed.0.is_empty()
                         {
@@ -334,7 +327,7 @@ pub fn get_keystroke() -> Result<char>
                 KeyCode::Char( c ) => c,
                 KeyCode::Enter => '\r',
                 KeyCode::Esc => '0',
-                _ => continue,
+                _ => continue
             };
 
             disable_raw_mode()?;

@@ -1,6 +1,6 @@
 /*
 	TurboRipent - TUI Frontend for Ripent
-	Version 2.0
+	Version 2.1.0
 
 Copyright (C) 2025 Outerbeast
 This program is free software: you can redistribute it and/or modify
@@ -18,11 +18,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 use std::
 {
+    collections::HashMap,
+    fmt::Write,
     fs,
     path::
     {
         Path,
         PathBuf
+    },
+    ops::
+    {
+        Deref,
+        DerefMut,
+        Index
     }
 };
 
@@ -32,13 +40,12 @@ use anyhow::
     bail
 };
 
-use crate::
+use crossterm::style::Stylize;
+
+use crate::bsp::
 {
-    bsp::
-    {
-        BspFile,
-        LumpIdx
-    }
+    BspFile,
+    LumpIdx
 };
 
 pub const EXT_ENT: &str = "ent";
@@ -46,84 +53,315 @@ pub const EXT_POINT_ENT: &str = "entp";
 pub const EXT_BRUSH_ENT: &str = "entm";
 pub const EXT_BSP: &str = "bsp";
 
-pub type Dictionary = std::collections::HashMap<String, String>;
+#[derive( Clone, Default, Debug, PartialEq )]
+pub struct EntityDictionary(HashMap<String, String>);
 
+impl EntityDictionary
+{   /// Constructor
+    pub fn new(classname: &str) -> Self
+    {
+        Self( HashMap::from( [( "classname".to_string(), classname.to_string() )] ) )
+    }
+    /// Constructor
+    fn from_ent_block(ent_block: &str) -> Self
+    {
+        let mut this = Self::default();
+        let mut iter = ent_block.split( '"' ).skip( 1 ).step_by( 2 );
+
+        while let Some( key ) = iter.next()
+        {
+            if let Some( value ) = iter.next()
+            {
+                this.insert( key.to_string(), value.to_string() );
+            }
+        }
+
+        this
+    }
+    /// Collection constructor - entity plain text to edicts
+    #[inline] pub fn from_ent_txt(ent_txt: &str) -> Vec<Self>
+    {
+        Self::make_iter( ent_txt ).collect()
+    }
+    /// Iterator constructor - entity plain text to edicts iterator
+    pub fn make_iter(ent_txt: &str) -> impl Iterator<Item = Self>
+    {
+        ent_txt.split( '{' ).skip( 1 ).filter_map( |block|
+        {
+            let inner = block.split_once( '}' )?.0;
+            Some( Self::from_ent_block( inner ) )
+        })
+    }
+
+    pub fn get_classname(&self) -> &str
+    {
+        self.0
+            .get( "classname" )
+            .filter( |s| !s.is_empty() )
+            .map( |s| s.as_str() )
+        .unwrap_or( "<no classname>" )
+    }
+    /// Returns the brush model index for brush entities (worldspawn returns 0), or None for point entities.
+    pub fn get_model_index(&self) -> Option<usize>
+    {
+        if self.get_classname() == "worldspawn"
+        {
+            return Some( 0 );
+        }
+
+        self.0
+            .get( "model" )
+            .and_then( |m| m.strip_prefix( '*' ) )
+            .and_then( |s| s.parse().ok() )
+    }
+
+    pub fn to_txt(entities: &[Self]) -> String
+    {
+        let mut buf = String::new();
+
+        for kv in entities
+        {
+            if kv.is_empty()
+            {
+                continue;
+            }
+
+            buf.push_str( "{\n" );
+
+            for (key, value) in kv.iter()
+            {
+                writeln!( buf, "\"{key}\" \"{value}\"" ).expect( "Failed to write to buffer.");
+            }
+
+            buf.push_str( "}\n" );
+        }
+
+        buf
+    }
+    /// Loads entities from ENT or BSP files, returns a collection of edicts
+    pub fn load_entities(file_path: &Path) -> Result<Vec<Self>>
+    {
+        match file_path.extension().and_then( |ext| ext.to_str() )
+        {
+            Some( EXT_ENT ) | Some( EXT_POINT_ENT ) | Some( EXT_BRUSH_ENT ) =>
+                Ok( Self::from_ent_txt( &fs::read_to_string( file_path )? ) ),
+            
+            Some( EXT_BSP ) =>
+            {
+                let bsp = BspFile::load( file_path )?;
+                Ok( Self::from_ent_txt( &ExtractTarget::Text.with( &bsp, None )? ) )
+            }
+
+            Some( other_ext ) => bail!( "Unknown file extension '{}'", other_ext ),
+            None => bail!( "Must load from a file." )
+        }
+    }
+    /// Saves a collection of entities to a file.
+    /// For plain ENT text files, contents are overwritten and saved
+    /// For BSP files, the entity data is imported into the BSP
+    pub fn save_entities(entities: &[Self], file_path: &Path) -> Result<()>
+    {
+        let ent_txt = Self::to_txt( entities );
+
+        match file_path.extension().and_then( |ostr| ostr.to_str() )
+        {
+            Some( EXT_ENT ) | Some( EXT_POINT_ENT ) | Some( EXT_BRUSH_ENT ) => Ok( fs::write( file_path, &ent_txt )? ),
+            Some( EXT_BSP ) => Ok( ImportSource::Text( ent_txt ).with( BspFile::load( file_path )? )?.save()? ),
+            Some( other_ext ) => bail!( "Unknown file extension '{}'", other_ext ),
+            None => bail!( "Must save to a file." )
+        }
+    }
+    /// Converts a JSON string into a vector of EntityDictionary objects.
+    #[cfg( false )]
+    pub fn from_json(json: &str) -> Result<Vec<Self>>
+    {
+        serde_json::from_str( json )?.iter().map( |v|
+        {
+            let map = v["KeyValues"].as_object().context( "missing KeyValues" )?;
+
+            Ok( Self( map
+                .iter()
+                .map( |(k, v)| ( k.clone(), v.as_str().unwrap_or_default().to_string() ) )
+                .collect() ) )
+        })
+        .collect()
+    }
+    /// Converts a vector of EntityDictionary objects into a JSON string.
+    #[cfg( false )]
+    pub fn to_json(entities: &[Self]) -> String
+    {
+        let arr: Vec<_> = entities.iter().map( |e| serde_json::json!({ "KeyValues": e.0 }) ).collect();
+        serde_json::to_string_pretty( &arr ).unwrap()
+    }
+}
+
+impl Deref for EntityDictionary
+{
+    type Target = HashMap<String, String>;
+
+    fn deref(&self) -> &Self::Target { &self.0 }
+}
+
+impl DerefMut for EntityDictionary
+{
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0 }
+}
+
+impl Index<&str> for EntityDictionary
+{
+    type Output = String;
+
+    fn index(&self, key: &str) -> &String { &self.0[key] }
+}
 pub enum ExtractTarget
 {
+    Text,
     Single,
     Split
+}
+
+impl ExtractTarget
+{
+    /// Extracts entity data from a BSP file.
+    /// Returns the extracted data as a string.
+    /// If a output path is specified, the extracted data will be written to that path as an:
+    /// - ent file (Single)
+    /// - entp + entm (Split)
+    pub fn with(&self, bsp: &BspFile, some_output_path: Option<&Path>) -> Result<String>
+    {
+        let ent_data = bsp.slice_lump( LumpIdx::Entities );
+
+        if ent_data.is_empty()
+        {
+            bail!( "Entity lump is empty" );
+        }
+
+        let all_ents =
+        if let Some( &0 ) = ent_data.last()
+        {
+            str::from_utf8( &ent_data[..ent_data.len() - 1] )?.to_owned()
+        }
+        else
+        {
+            str::from_utf8( ent_data )?.to_owned()
+        };
+
+        match self
+        {
+            Self::Text => Ok( all_ents ),
+            Self::Single =>
+            {
+                let Some( out ) = some_output_path 
+                else
+                {
+                    bail!( "ExtractTarget::Single requires an output path" );
+                };
+
+                fs::write( out, all_ents.as_bytes() )?;
+                Ok( all_ents )
+            }
+
+            Self::Split =>
+            {
+                let Some( out ) = some_output_path 
+                else
+                {
+                    bail!( "ExtractTarget::Split requires an output path" );
+                };
+                
+                let( mut point_ents, mut brush_ents ) = ( String::new(), String::new() );
+
+                for ent in EntityDictionary::make_iter( &all_ents )
+                {
+                    let is_brush = ent.get_model_index().is_some();
+                    let line = EntityDictionary::to_txt( &[ent] );
+
+                    if is_brush
+                    {
+                        brush_ents.push_str( &line );
+                    }
+                    else
+                    {
+                        point_ents.push_str( &line );
+                    }
+                }
+
+                fs::write( out.with_extension( EXT_POINT_ENT ), point_ents.as_bytes() )?;
+                fs::write( out.with_extension( EXT_BRUSH_ENT ), brush_ents.as_bytes() )?;
+
+                println!( "Extracted split entities → {:?} and {:?}",
+                    out.with_extension( EXT_POINT_ENT ), out.with_extension( EXT_BRUSH_ENT ) );
+
+                Ok( all_ents )
+            }
+        }
+    }
 }
 
 pub enum ImportSource
 {
     Text(String),
-    File(PathBuf),
+    Single(PathBuf),
     Split(PathBuf)
 }
 
-#[inline] pub(crate) fn is_brush_ent(ent_kvs: &Dictionary) -> bool
+impl ImportSource
 {
-    ent_kvs.get( "classname" ).is_some_and( |c| c == "worldspawn" )
-    || ent_kvs.get( "model" ).is_some_and( |m| m.starts_with( '*' ) && m.len() > 1 )
-}
-
-fn extract_keyvalues(ent_block: &str) -> Dictionary
-{
-    let mut dict = Dictionary::new();
-    let quoted: Vec<_> = ent_block.split( '"' ).skip( 1 ).step_by( 2 ).collect();
-
-    for pair in quoted.chunks( 2 )
+    /// Imports entity data from an entity file into a BSP.
+    /// The BSP file is NOT ovewritten here - BspFile::save() must be executed after this function returns OK.
+    /// This avoids BSP corruption.
+    pub fn with(self, mut bsp: BspFile) -> Result<BspFile>
     {
-        if let [key, value] = pair
+        let ent_txt = 
+        match self
         {
-            dict.insert( key.to_string(), value.to_string() );
+            Self::Text( t ) => t,
+            Self::Single( p ) => fs::read_to_string( p )?,
+            Self::Split( base ) => // Content has to be combined before importing
+            {
+                let point_ents_file = base.with_extension( EXT_POINT_ENT );
+                let brush_ents_file = base.with_extension( EXT_BRUSH_ENT );
+
+                if !point_ents_file.try_exists().unwrap_or( false )
+                {
+                    bail!( "Cannot import split entities: missing {point_ents_file:?}.\n
+                        Both .{EXT_POINT_ENT} and .{EXT_BRUSH_ENT} are required." );
+                }
+
+                if !brush_ents_file.try_exists().unwrap_or( false )
+                {
+                    bail!( "Cannot import split entities: missing {brush_ents_file:?}.\n
+                        Both .{EXT_POINT_ENT} and .{EXT_BRUSH_ENT} are required." );
+                }
+
+                let mut combined = fs::read_to_string( &point_ents_file )?;
+                combined.push( '\n' );
+                combined.push_str( &fs::read_to_string( &brush_ents_file )? );
+
+                combined
+            }
+        };
+
+        let mut entities = EntityDictionary::from_ent_txt( &normalise_entities( &ent_txt ) );
+        strip_invalid_brushents( &mut entities, &bsp );
+        let mut out = EntityDictionary::to_txt( &entities );
+
+        if !out.ends_with( '\0' )
+        {
+            out.push( '\0' );
         }
+
+        bsp.replace_lump( LumpIdx::Entities, out.as_bytes() )?;
+
+        Ok( bsp )
     }
-
-    dict
 }
-
-pub fn parse_entity_blocks(ent_txt: &str) -> Vec<(String, Dictionary)>
-{
-    ent_txt.split( '{' )
-        .skip( 1 )
-        .filter_map( |block|
-        {
-            let inner = block.split_once( '}' )?.0;
-            Some( ( format!( "{{{inner}}}" ), extract_keyvalues( inner ) ) )
-        })
-    .collect()
-}
-
-pub fn serialize_entities(entities: &[Dictionary]) -> String
-{
-    let mut out = String::new();
-
-    for kv in entities
-    {
-        if kv.is_empty()
-        {
-            continue;
-        }
-
-        out.push_str( "{\n" );
-
-        for (key, value) in kv
-        {
-            out.push_str( &format!( "\"{key}\" \"{value}\"\n" ) );
-        }
-
-        out.push_str( "}\n" );
-    }
-
-    out
-}
-
+/// Normalises the entity text to a consistent format, fixing issues with brace nesting and alignment.
 pub(crate) fn normalise_entities(text: &str) -> String
 {   // Pass 1: Structural normalisation (quote-aware brace handling)
     let mut struct_fixed = String::new();
     let mut in_quote = false;
-    let mut depth: i32 = 0;
+    let mut depth = 0;
 
     for c in text.chars()
     {
@@ -199,11 +437,11 @@ pub(crate) fn normalise_entities(text: &str) -> String
                     let key = q[1];
                     if !q[2].trim().is_empty()
                     {
-                        fixed.push_str( &format!( "\"{key}\" \"{}\"\n", q[2].trim() ) );
+                        writeln!( fixed, "\"{key}\" \"{}\"", q[2].trim() ).expect( "infallible: writing to String" );
                     }
                 }
 
-                3 => fixed.push_str( &format!( "\"{}\" \"{}\"\n", q[1], q[3] ) ),
+                3 => writeln!( fixed, "\"{}\" \"{}\"", q[1], q[3] ).expect( "infallible: writing to String" ),
                 4 =>
                 {
                     fixed.push_str( line );
@@ -215,7 +453,7 @@ pub(crate) fn normalise_entities(text: &str) -> String
                     let clean: String = q[3..q.len()-1].concat().chars().filter( |c| *c != '"' ).collect();
                     if !clean.is_empty()
                     {
-                        fixed.push_str( &format!( "\"{}\" \"{clean}\"\n", q[1] ) );
+                        writeln!( fixed, "\"{}\" \"{clean}\"", q[1] ).expect( "infallible: writing to String" );
                     }
                 }
 
@@ -224,7 +462,7 @@ pub(crate) fn normalise_entities(text: &str) -> String
                     let mut i = 0;
                     while i + 3 < q.len() - 1
                     {
-                        fixed.push_str( &format!( "\"{}\" \"{}\"\n", q[i + 1], q[i + 3] ) );
+                        writeln!( fixed, "\"{}\" \"{}\"", q[i + 1], q[i + 3] ).expect( "infallible: writing to String" );
                         i += 4;
                     }
                 }
@@ -239,130 +477,29 @@ pub(crate) fn normalise_entities(text: &str) -> String
 
     fixed
 }
-// Extracts entity data from a BSP file to entity file
-pub fn extract(bsp: &BspFile, out: &Path, target: ExtractTarget) -> Result<()>
+/// Strip out entities that reference non-existent brush models
+pub fn strip_invalid_brushents(entities: &mut Vec<EntityDictionary>, bsp: &BspFile)
 {
-    let ent_data = bsp.slice_lump( LumpIdx::Entities );
-
-    if ent_data.is_empty()
-    {
-        bail!( "Entity extraction failed: data size is 0" );
-    }
-
-    let all_ents =
-    if let Some( &0 ) = ent_data.last()
-    {
-        str::from_utf8( &ent_data[..ent_data.len() - 1] )?
-    }
-    else
-    {
-        str::from_utf8( ent_data )?
-    };
-
-    match target
-    {
-        ExtractTarget::Single =>
-        {
-            fs::write( out, all_ents.as_bytes() )?;
-            Ok( () )
-        }
-        ExtractTarget::Split =>// Split entities into point and brush entities into separate files
-        {
-            let( mut point_ents, mut brush_ents ) = ( String::new(), String::new() );
-
-            for ( raw, dict ) in &parse_entity_blocks( all_ents )
-            {
-                if is_brush_ent( dict )
-                {
-                    brush_ents.push_str( raw );
-                    brush_ents.push( '\n' );
-                }
-                else
-                {
-                    point_ents.push_str( raw );
-                    point_ents.push( '\n' );
-                }
-            }
-
-            fs::write( out.with_extension( EXT_POINT_ENT ), point_ents.as_bytes() )?;
-            fs::write( out.with_extension( EXT_BRUSH_ENT ), brush_ents.as_bytes() )?;
-
-            println!( "Extracted split entities → {:?} and {:?}",
-                out.with_extension( EXT_POINT_ENT ), out.with_extension( EXT_BRUSH_ENT ) );
-
-            Ok( () )
-        }
-    }
-}
-// Imports entity data from an entity file into a BSP.
-// The BSP file is NOT ovewritten here - BspFile::save() must be executed after this function returns OK
-// This avoids BSP corruption.
-pub fn import(mut bsp: BspFile, source: ImportSource) -> Result<BspFile>
-{
-    let ent_txt = 
-    match source
-    {
-        ImportSource::Text( t ) => t,
-        ImportSource::File( p ) => fs::read_to_string( p )?,
-        ImportSource::Split( base ) =>
-        {
-            let point_ents_file = base.with_extension( EXT_POINT_ENT );
-            let brush_ents_file = base.with_extension( EXT_BRUSH_ENT );
-
-            if !point_ents_file.try_exists().unwrap_or( false )
-            {
-                bail!( "Cannot import split entities: missing {point_ents_file:?}.\n
-                    Both .{EXT_POINT_ENT} and .{EXT_BRUSH_ENT} are required." );
-            }
-
-            if !brush_ents_file.try_exists().unwrap_or( false )
-            {
-                bail!( "Cannot import split entities: missing {brush_ents_file:?}.\n
-                    Both .{EXT_POINT_ENT} and .{EXT_BRUSH_ENT} are required." );
-            }
-
-            let mut combined = fs::read_to_string( &point_ents_file )?;
-            combined.push( '\n' );
-            combined.push_str( &fs::read_to_string( &brush_ents_file )? );
-
-            combined
-        }
-    };
-
-    let ent_txt = normalise_entities( &ent_txt );
-    let mut entities: Vec<_> = parse_entity_blocks( &ent_txt )
-        .into_iter().map( |( _, d )| d ).collect();
-
     let model_indices = bsp.slice_lump( LumpIdx::Models ).len() / 64;
     entities.retain( |ent|
     {
-        let Some( m ) = ent.get( "model" ) else { return true };
-        let Some( s ) = m.strip_prefix( '*' ) else { return true };
-        let Ok( idx ) = s.parse::<usize>() else { return true };
+        let Some( idx ) = ent.get_model_index()
+        else
+        {
+            return true
+        };
 
         if idx == 0 || idx < model_indices
         {
             return true;
         }
 
-        let cn = ent.get( "classname" ).map( |s| s.as_str() ).unwrap_or( "<unknown>" );
-        eprintln!( "  [warning] entity \"{cn}\" references non-existent brush model *{idx}, discarding" );
+        eprintln!( "⚠️ {}", format!( "entity \"{}\" references non-existent brush model *{idx}, discarding...", ent.get_classname() ).yellow() );
 
         false
     });
-
-    let mut out = serialize_entities( &entities );
-
-    if !out.ends_with( '\0' )
-    {
-        out.push( '\0' );
-    }
-
-    bsp.replace_lump( LumpIdx::Entities, out.as_bytes() )?;
-
-    Ok( bsp )
 }
-
+/// Runs entity normalisation operations on a BSP or ENT file.
 pub fn repair(bsporent_path: &Path) -> Result<()>
 {
     match bsporent_path.extension().and_then( |ext| ext.to_str() )
@@ -370,27 +507,24 @@ pub fn repair(bsporent_path: &Path) -> Result<()>
         Some( EXT_BSP ) =>
         {
             let bsp = BspFile::load( bsporent_path )?;
-            let text = str::from_utf8( bsp.slice_lump( LumpIdx::Entities ) )?;
-            import( bsp.clone(), ImportSource::Text( normalise_entities( text ) ) )?.save()?;
+            let ent_txt = normalise_entities( &ExtractTarget::Text.with( &bsp, None )? );
+            ImportSource::Text( ent_txt ).with( bsp )?.save()?;
             println!( "Repaired entities → {bsporent_path:?}" );
-
-            Ok( () )
         }
 
         Some( EXT_ENT ) | Some( EXT_POINT_ENT ) | Some( EXT_BRUSH_ENT ) =>
         {
-            let text = fs::read_to_string( bsporent_path )?;
-            fs::write( bsporent_path, normalise_entities( &text ).as_bytes() )?;
+            fs::write( bsporent_path, normalise_entities( &fs::read_to_string( bsporent_path )? ).as_bytes() )?;
             println!( "Repaired entities → {bsporent_path:?}" );
-
-            Ok( () )
         }
 
         Some( s ) => bail!( "Unsupported file type '{s}'. Requires ENT/BSP" ),
         None => bail!( "Unsupported file type. Requires ENT/BSP" )
     }
+
+    Ok( () )
 }
-// Decides automatically extraction/importation based on file type
+/// Decides automatically extraction/importation based on file type
 pub fn rip(bsporent_path: &Path) -> Result<()>
 {
     if !bsporent_path.exists() 
@@ -403,7 +537,7 @@ pub fn rip(bsporent_path: &Path) -> Result<()>
         Some( EXT_BSP ) =>// Extract from BSP to ENT
         {
             let ent_path = bsporent_path.with_extension( EXT_ENT );// "level.bsp" -> "level.ent"
-            extract( &BspFile::load( bsporent_path )?, &ent_path, ExtractTarget::Single )?;
+            ExtractTarget::Single.with( &BspFile::load( bsporent_path )?, Some( &ent_path ) )?;
             println!( "Extracted entities → {ent_path:?}" );
 
             Ok( () )
@@ -412,8 +546,7 @@ pub fn rip(bsporent_path: &Path) -> Result<()>
         Some( EXT_ENT ) =>// Import from ENT to BSP
         {
             let bsp_path = bsporent_path.with_extension( EXT_BSP );// "level.ent" -> "level.bsp"
-            let bsp = BspFile::load( &bsp_path )?;
-            import( bsp, ImportSource::File( bsporent_path.to_path_buf() ) )?.save()?;
+            ImportSource::Single( bsporent_path.to_path_buf() ).with( BspFile::load( &bsp_path )? )?.save()?;
             println!( "Imported entities → {bsp_path:?}" );
             fs::remove_file( bsporent_path )?;
 
@@ -423,8 +556,7 @@ pub fn rip(bsporent_path: &Path) -> Result<()>
         Some( EXT_POINT_ENT ) | Some( EXT_BRUSH_ENT ) =>// Import from .entp + .entm to BSP
         {
             let bsp_path = bsporent_path.with_extension( EXT_BSP );
-            let bsp = BspFile::load( &bsp_path )?;
-            import( bsp, ImportSource::Split( bsp_path.with_extension( "" ) ) )?.save()?;
+            ImportSource::Split( bsp_path.with_extension( "" ) ).with( BspFile::load( &bsp_path )? )?.save()?;
             println!( "Imported split entities → {bsp_path:?}" );
 
             fs::remove_file( bsp_path.with_extension( EXT_POINT_ENT ) )?;
