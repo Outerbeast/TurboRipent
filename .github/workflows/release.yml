@@ -27,6 +27,7 @@ jobs:
         with:
           files: |
             *.exe
+            *.cmd
             *.sha256.txt
           draft: true
           generate_release_notes: true
@@ -53,6 +54,8 @@ jobs:
         with:
           files: |
             TurboRipent
+            TurboRipent-Editor.sh
+            TurboRipent-Editor.desktop
             TurboRipent.desktop
             *.sha256.txt
           draft: true
