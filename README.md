@@ -8,7 +8,7 @@ Includes a basic entity editor for quick edits.
 - Extraction and importing entity (`.ent`) files
 - Split extraction/import of point entities and brush entities (`.entp`/`.entm`)
 - Entity repair — re-parses and re-serialises entity data, fixing corruption
-- Editor mode (Windows only)
+- Editor mode
 - BSP entity statistics (`.log`)
 
 Importing also automatically fixes any corruption in the entity data and discards references to brush models that don't exist in the target BSP.
