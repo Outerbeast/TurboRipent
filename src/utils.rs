@@ -16,14 +16,6 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
-/// Leak allocator: boxes the value, leaks it forever
-#[macro_export] macro_rules! alloc_leaked
-{
-    ( $value:expr ) =>
-    {
-        Box::leak( Box::new( $value ) )
-    };
-}
 /// Returns the current directory path, or "." if it fails.
 #[macro_export] macro_rules! current_dir_path
 {
@@ -64,49 +56,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         }
     };
 }
-/// Hide console window (Windows only)
-#[cfg( target_os = "windows" )]
-pub fn hide_terminal()
-{
-    use std::ffi;
-
-    unsafe extern "system"
-    {
-        fn GetConsoleWindow() -> *mut ffi::c_void;
-        fn ShowWindow(hwnd: *mut ffi::c_void, nCmdShow: i32) -> i32;
-    }
-
-    let hwnd = unsafe { GetConsoleWindow() };
-    if !hwnd.is_null()
-    {
-        unsafe { ShowWindow( hwnd, 0 ); } // SW_HIDE = 0
-    }
-}
-
-#[cfg( target_os = "windows" )]
-pub fn show_terminal()
-{
-    use std::ffi;
-
-    unsafe extern "system"
-    {
-        fn GetConsoleWindow() -> *mut ffi::c_void;
-        fn ShowWindow(hwnd: *mut ffi::c_void, nCmdShow: i32) -> i32;
-        fn SetForegroundWindow(hwnd: *mut ffi::c_void) -> i32;
-    }
-
-    let hwnd = unsafe { GetConsoleWindow() };
-    if !hwnd.is_null()
-    {
-        unsafe
-        {
-            ShowWindow( hwnd, 5 ); // SW_SHOW = 5
-            SetForegroundWindow( hwnd );
-        }
-    }
-}
 /// Gets CLI arguments (flags) and values
-pub fn get_args<F, V>() -> (Vec<F>, Vec<V>)
+pub(crate) fn get_args<F, V>() -> (Box<[F]>, Box<[V]>)
 where
     F: std::str::FromStr,
     V: std::str::FromStr + Default
@@ -115,24 +66,27 @@ where
 
     if args.is_empty()
     {
-        return ( vec![], vec![] );
+        return ( Box::new( [] ), Box::new( [] ) );
     }
 
     let ( mut flags, mut values ) = ( vec![], vec![] );
 
     for a in args
     {
-        match a.parse()
+        if let Ok( f ) = a.parse()
+        {   // Is a flag
+            flags.push( f );
+        }
+        else// Is a value (file path)
         {
-            Ok( f ) => flags.push( f ),// Is a flag
-            Err( _ ) => values.push( a.parse::<V>().unwrap_or_default() )// Is a value (file path)
+            values.push( a.parse::<V>().unwrap_or_default() )
         }
     }
 
-    ( flags, values )
+    ( flags.into_boxed_slice(), values.into_boxed_slice() )
 }
 
-pub trait HasExtension
+pub(crate) trait HasExtension
 {
     fn has_extension(&self, extensions: &[&str]) -> bool;
 }
@@ -151,7 +105,7 @@ impl<T: AsRef<std::path::Path>> HasExtension for T
     }
 }
 
-pub fn remove_files(paths: &[std::path::PathBuf], some_extension: Option<&str>)
+pub(crate) fn remove_files(paths: &[std::path::PathBuf], some_extension: Option<&str>)
 {
     if paths.is_empty()
     {

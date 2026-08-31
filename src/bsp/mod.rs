@@ -22,7 +22,11 @@ pub(crate) mod stats;
 use std::
 {
     fs,
-    io,
+    io::
+    {
+        self,
+        Write
+    },
     ops,
     path::
     {
@@ -50,7 +54,8 @@ const HEADER_SIZE: usize = ( LumpIdx::COUNT * LUMP_ENTRY_SIZE ) + 4;
 #[repr( usize )]
 #[derive( Clone, Copy, EnumCount )]
 #[cfg_attr( test, derive( Debug ) )]
-pub enum LumpIdx
+#[allow( dead_code )]// All variants are needed for lump indexing; most are never constructed
+pub(crate) enum LumpIdx
 {
     Entities,
     Planes,
@@ -77,16 +82,16 @@ impl From<LumpIdx> for usize
 #[repr( C )]
 #[derive( Clone, Copy )]
 #[cfg_attr( test, derive( Debug ) )]
-pub struct Lump(pub i32, pub i32);// (start, length)
+pub(crate) struct Lump(pub(crate) i32, pub(crate) i32);// (start, length)
 
 impl Lump
 {
-    pub fn length(&self) -> i32
+    pub(crate) fn length(&self) -> i32
     {
         self.1
     }
 
-    pub fn range(&self) -> ops::Range<usize>
+    pub(crate) fn range(&self) -> ops::Range<usize>
     {
         let start = self.0 as usize;
         let end = start + self.1 as usize;
@@ -98,10 +103,10 @@ impl Lump
 #[repr( C )]
 #[derive( Clone )]
 #[cfg_attr( test, derive( Debug ) )]
-pub struct BspHeader
+pub(crate) struct BspHeader
 {
-    pub version: i32,
-    pub lumps: [Lump; LumpIdx::COUNT]
+    pub(crate) version: i32,
+    pub(crate) lumps: [Lump; LumpIdx::COUNT]
 }
 
 impl BspHeader
@@ -113,7 +118,6 @@ impl BspHeader
 
     fn write_to(&self, mut buf: &mut [u8]) -> Result<()>
     {
-        use std::io::Write;
         buf.write_all( &self.version.to_le_bytes() )?;
         
         for &Lump( offset, length ) in &self.lumps
@@ -125,11 +129,11 @@ impl BspHeader
         Ok( () )
     }
 
-    pub fn from_bytes(data: &[u8]) -> Result<Self>
+    pub(crate) fn from_bytes(data: &[u8]) -> Result<Self>
     {
         if data.len() < HEADER_SIZE
         {
-            bail!( "File size doesn't match expected BSP version" );
+            bail!( "File size doesn't match expected BSP version." );
         }
 
         let version = i32::from_le_bytes( data.get( 0..4 )
@@ -167,16 +171,16 @@ impl BspHeader
 /// BSP file as a whole with header, content and path
 #[repr( C )]
 #[derive( Clone )]
-pub struct BspFile
+pub(crate) struct BspFile
 {
-    pub header: BspHeader,
-    pub content: Rc<[u8]>,
-    pub path: PathBuf
+    pub(crate) header: BspHeader,
+    pub(crate) content: Rc<[u8]>,
+    pub(crate) path: PathBuf
 }
 
 impl BspFile
 {
-    pub fn load(path: &Path) -> Result<Self>
+    pub(crate) fn load(path: &Path) -> Result<Self>
     {
         let buf = fs::read( path )?;
         let header = BspHeader::from_bytes( &buf )?;
@@ -185,19 +189,19 @@ impl BspFile
         {   // Check if the lump's end is beyond the buffer's end
             if lump.range().end > buf.len()
             {
-                bail!( "Lump {i} out of bounds" );
+                bail!( "Lump {i} out of bounds. Expected: {}, Actual: {}", buf.len(), lump.range().end );
             }
         }
 
         Ok( Self { content: buf.into(), header, path: path.to_path_buf() } )
     }
 
-    pub fn slice_lump(&self, idx: LumpIdx) -> &[u8]
+    pub(crate) fn slice_lump(&self, idx: LumpIdx) -> &[u8]
     {
         &self.content[self.header.lump( idx ).range()]
     }
 
-    pub fn replace_lump(&mut self, idx: LumpIdx, new_data: &[u8]) -> Result<(), Error>
+    fn replace_lump(&mut self, idx: LumpIdx, new_data: &[u8]) -> Result<(), Error>
     {
         let idx = usize::from( idx );
         // Update length
@@ -231,7 +235,7 @@ impl BspFile
         Ok( () )
     }
 
-    pub fn save(&self) -> io::Result<()>
+    pub(crate) fn save(&self) -> io::Result<()>
     {
         fs::write( &self.path, &self.content )
     }

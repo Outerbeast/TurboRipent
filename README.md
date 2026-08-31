@@ -52,31 +52,38 @@ Example:
 `level.ent` -> Deleted after successful import, fails if `level.bsp` is missing.
 `level.entp` OR `level.ent` -> Deleted after successful import, fails if `level.bsp` is missing or if one of the brush/point entity pair is missing
 
-### Editor (Windows Only)
+### Terminal Editor
 
 ![alt text](https://github.com/Outerbeast/TurboRipent/blob/main/editor_preview.png?raw=true)
 
-The editor is a simple graphical interface for viewing and editing entities within a BSP or ENT file.
+The editor is a simple graphical interface for viewing and editing entities within a BSP or ENT file. <br>Please note: there is no FGD support. The editor is intended to be used to make quick edits and assumes you know what you're doing with regards to entity keys and the flags needing to be set. If you want a proper entity editor that includes FGD support, use [bspguy](https://github.com/wootguy/bspguy).
+
+
 To launch the editor:
-`TurboRipent.exe -edit <file>` (or `-editor` / `-gui`) to launch the graphical editor.
+`TurboRipent.exe -edit <file>` (or `-editor`/`-gui`) to launch the terminal editor.
 You may also drag a BSP or ENT file onto `TurboRipent-Editor.cmd`.
 
-All entities are listed by classname on the left. Selecting one displays its keyvalues on the right, formatted as:
-```
-key=value
-```
+### Entity List
+All entities are listed by classname on the left panel. Selecting one displays its key/value pairs and set Entity flags (`spawnflags`). Below the entity list is a search box that you can filter entities in the list that have a key or value matching the search query.
 
-A filter box below the list allows searching by key or value — matching entities update in real time.
+### Entity Properties
+The Properties panel on the right shows the keyvalues for the selected entity.
+Clicking "➕" will add a new blank keyvalue row which you can add your key and value you want
 
-Buttons:
-- **Create** — Creates a new entity with classname `new_entity`
-- **Clone** — Duplicates the selected entity
-- **Delete** — Removes the selected entity
-- **Save** — Saves changes and exits the editor
+Clicking on "❌" will delete an existing keyvalue row.
 
-Closing the editor via `X` prompts you to confirm changes. Clicking `Save` will save changes and exit.
+### Entity Flags
+The Flags panel shows a number of flag boxes that can be (un)checked by clicking on them. This corresponds to the `spawnflags` key up in the Entity Properties. To know which flags to set for your entity, refer to the FGD file or the entity docs.
 
-*<small>The editor is a work-in-progress which is why its very primitive and basic with not very many functions. The aim is to replace outdated applications like EntEd or BSPEdit, where entity data is simply displayed in plain text which makes entmapping difficult and error prone. Extensive feedback and testing is required.</small>
+### Buttons
+- 🆕`Create` — Creates a new entity with classname `new_entity`
+- 🖨️`Clone` — Duplicates the selected entity
+- 🗑️`Delete` — Removes the selected entity
+- ↩️`Undo` - Reverts a change done to an entity
+- ↪️`Redo` - Restores a change done to an entity
+- 💾`Save` — Saves changes and exits the editor
+
+Note: Closing the editor via `X` in the title bar will exit **without saving any changes**, keep this in mind.
 
 ### Command Line Arguments
 
@@ -90,7 +97,7 @@ Closing the editor via `X` prompts you to confirm changes. Clicking `Save` will 
 | `-splitextract` / `-splitexport` / `-se` `<file>` | Extract split `.entp` (point entities) and `.entm` (brush entities) from a BSP |
 | `-splitimport` / `-si` `<file>` | Import split `.entp`/`.entm` files into a BSP (both files required) |
 | `-repair` / `-parse` / `-r` `<file>` | Re-parse and re-serialise entity data, fixing corruption |
-| `-edit` / `-editor` / `-gui` `<file>` | Open the graphical entity editor (Windows only) |
+| `-edit` / `-editor` / `-gui` `<file>` | Open the terminal entity editor |
 | `<file1>` `<file2>` `...` | Quick mode — auto-detect action based on file extension (see [Quick Extract/Import](#quick-extractimport)) |
 
 
@@ -138,4 +145,4 @@ Terminal menu powered by:-
 - crossterm
 - dialoguer
 
-Editor powered by [Native Windows GUI](https://github.com/gabdube/native-windows-gui) - a big thanks to the NWG project for providing a Rust library to build native Windows applications.
+Editor powered by [Cursive](https://github.com/gyscos/cursive) with the crossterm backend.

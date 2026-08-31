@@ -27,29 +27,21 @@ use std::
     path::PathBuf
 };
 
-use crate::
-{
-    bsp::
-    {
-        BspFile,
-        LumpIdx,
-        ent::EntityDictionary
-    }
-};
+use crate::prelude::*;
 
-pub struct EntityReport
+pub(crate) struct EntityReport
 {
-    pub path: PathBuf,
-    pub total_entities: usize,
-    pub point_entities: usize,
-    pub brush_entities: usize,
-    pub total_brush_models: usize,
-    pub unused_model_indices: Vec<usize>
+    pub(crate) path: PathBuf,
+    pub(crate) total_entities: usize,
+    pub(crate) point_entities: usize,
+    pub(crate) brush_entities: usize,
+    pub(crate) total_brush_models: usize,
+    pub(crate) unused_model_indices: Vec<usize>
 }
 
 impl EntityReport
 {
-    pub fn generate(bsp: &BspFile) -> Self
+    pub(crate) fn generate(bsp: &BspFile) -> Self
     {
         let ent_data = bsp.slice_lump( LumpIdx::Entities );
         let model_count = bsp.slice_lump( LumpIdx::Models ).len() / 64;

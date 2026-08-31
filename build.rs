@@ -18,28 +18,64 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 fn main() -> std::io::Result<()>
 {
-    #[cfg( windows )]
+    const PRODUCT_NAME: &str = env!( "CARGO_PKG_NAME" );
+    let root = std::path::PathBuf::from( std::env::var_os( "CARGO_MANIFEST_DIR" )
+        .unwrap_or_default() );
+
+    cfg_select!
     {
-        const PRODUCT_NAME: &str = env!( "CARGO_PKG_NAME" );
-        const AUTHOR: &str = env!( "CARGO_PKG_AUTHORS" );
-        const VERSION: &str = env!( "CARGO_PKG_VERSION" );
-        const DESCRIPTION: &str = env!( "CARGO_PKG_DESCRIPTION" );
+        windows =>
+        {
+            const AUTHOR: &str = env!( "CARGO_PKG_AUTHORS" );
+            const VERSION: &str = env!( "CARGO_PKG_VERSION" );
+            const DESCRIPTION: &str = env!( "CARGO_PKG_DESCRIPTION" );
 
-        winresource::WindowsResource::new()
-            .set( "ProductName", PRODUCT_NAME )
-            .set( "ProductVersion", VERSION )
-            .set( "FileDescription", DESCRIPTION )
-            .set( "FileVersion", VERSION )
-            .set( "LegalCopyright", AUTHOR )
-            .set( "OriginalFilename", &format!( "{PRODUCT_NAME}.exe" ) )
-            .set( "InternalName", PRODUCT_NAME )
-            .set( "CompanyName", AUTHOR )
-            .set( "LegalTrademarks", AUTHOR )
-            .set( "Comments", DESCRIPTION )
-			.set_icon( concat!( env!( "CARGO_PKG_NAME" ), ".ico" ) ) 
-            .set_manifest( include_str!( concat!( env!( "CARGO_PKG_NAME" ), ".manifest.xml" ) ) )
-        .compile()?;
-    }
+            winresource::WindowsResource::new()
+                .set( "ProductName", PRODUCT_NAME )
+                .set( "ProductVersion", VERSION )
+                .set( "FileDescription", DESCRIPTION )
+                .set( "FileVersion", VERSION )
+                .set( "LegalCopyright", AUTHOR )
+                .set( "OriginalFilename", &format!( "{PRODUCT_NAME}.exe" ) )
+                .set( "InternalName", PRODUCT_NAME )
+                .set( "CompanyName", AUTHOR )
+                .set( "LegalTrademarks", AUTHOR )
+                .set( "Comments", DESCRIPTION )
+                .set_icon( concat!( env!( "CARGO_PKG_NAME" ), ".ico" ) ) 
+                .set_manifest( include_str!( concat!( env!( "CARGO_PKG_NAME" ), ".manifest.xml" ) ) )
+            .compile()?;
 
-    Ok( () )
+            let cmd = format!( "@echo off\n\"%~dp0{PRODUCT_NAME}.exe\" -edit \"%~1\"" );
+            std::fs::write( root.join( format!( "{PRODUCT_NAME}-Editor.cmd" ) ), cmd )
+        }
+
+        unix =>
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let sh = format!(
+                "#!/bin/sh\n\
+                script_dir=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\n\
+                exec \"$script_dir/{PRODUCT_NAME}\" -edit \"$@\"\n" );
+
+            let editor_script = root.join( format!( "{PRODUCT_NAME}-Editor.sh" ) );
+            std::fs::write( &editor_script, sh )?;
+            let mut permissions = std::fs::metadata( &editor_script )?.permissions();
+            permissions.set_mode( 0o755 );
+            std::fs::set_permissions( &editor_script, permissions )?;
+
+            let desktop = format!(
+                "[Desktop Entry]\n\
+                Name={PRODUCT_NAME} Editor\n\
+                Comment=Edit BSP and ENT files\n\
+                Exec=\"{}\" %f\n\
+                Terminal=true\n\
+                Type=Application\n\
+                Categories=Utility;\n",
+                editor_script.display() );
+
+            std::fs::write( root.join( format!( "{PRODUCT_NAME}-Editor.desktop" ) ), desktop )
+        }
+
+    } 
 }

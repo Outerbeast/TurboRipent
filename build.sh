@@ -16,6 +16,7 @@ BIN_NAME="TurboRipent"
 DEST="$(dirname "$0")"
 
 cp "target/release/$BIN_NAME" "$DEST"
+chmod 755 "$DEST/$BIN_NAME"
 cat > "$DEST/$BIN_NAME.desktop" << EOF
 [Desktop Entry]
 Name=$BIN_NAME
@@ -27,7 +28,6 @@ Categories=Game;Utility;
 EOF
 
 sha256sum "$DEST/$BIN_NAME" > "$DEST/$BIN_NAME.sha256.txt"
-sha256sum "$DEST/$BIN_NAME.desktop" > "$DEST/$BIN_NAME.desktop.sha256.txt"
 
 echo "Build complete. The executable is located at $DEST/$BIN_NAME"
 echo "Desktop entry is located at $DEST/$BIN_NAME.desktop"

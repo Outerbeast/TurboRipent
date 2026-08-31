@@ -16,449 +16,701 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
-use std::cell::RefCell;
-
-use crossterm::style::Stylize;
-use native_windows_gui::
+use std::path::
 {
-    Event,
-    EventData,
-    MessageButtons,
-    MessageIcons,
-    MessageParams,
-    bind_event_handler,
-    dispatch_thread_events,
-    modal_message,
-    stop_thread_dispatch
+    Path,
+    PathBuf
 };
 
-use super::view::EditorWindow;
-use crate::prelude::*;
-
-thread_local!
+use cursive::
 {
-    static CTRL: RefCell<Option<EditorController>> = const { RefCell::new( None ) };
-}
-
-macro_rules! with_controller
-{
-    ( $gui:expr, |$ctrl:ident, $app:ident| $body:expr ) =>
+    Cursive,
+    event::
     {
-        CTRL.with( |c|
-        {
-            if let Some( ref mut $ctrl ) = *c.borrow_mut()
-            {
-                let $app = $gui;
-                $body
-            }
-        })
-    };
-}
+        Event,
+        Key
+    },
+    view::scroll::Scroller,
+    views::
+    {
+        Dialog,
+        EditView,
+        LinearLayout,
+        NamedView,
+        ScrollView,
+        SelectView
+    }
+};
 
+use crate::prelude::*;
+use super::view::
+{
+    self,
+    ENTITY_LIST,
+    ENTITY_LIST_SCROLL,
+    FLAG_TABLE,
+    FILTER,
+    PROPERTY_TABLE
+};
+/// Binds view events to controller callbacks
+pub(crate) fn with_controller<F>(siv: &mut Cursive, cb: F)
+where F: FnOnce(&mut EditorController, &mut Cursive)
+{   // The controller is taken out while the callback runs, so re-entrant callbacks cannot double-borrow it
+    let Some( mut controller ) = siv.take_user_data::<_>()
+    else
+    {
+        return
+    };
+
+    cb( &mut controller, siv );
+    siv.set_user_data( controller );
+}
+/// A snapshot of the editor's mutable state for undo/redo
+/// I could do this in a cheaper way, but I'm too lazy to think of one right now
+#[derive( Clone )]
+struct UndoState
+{
+    entities: Vec<EntityDictionary>,
+    selected_entity: Option<usize>
+}
+/// State of view/controller
+#[derive( Default )]
 pub(crate) struct EditorController
 {
     entities: Vec<EntityDictionary>,
     saved: Vec<EntityDictionary>,
     filtered_idxs: Vec<usize>,
-    prev_sel: i32,
-    updating_listbox: bool
+    selected_entity: Option<usize>,
+    rows: Vec<(String, String)>,
+    shown_classname: String,
+    updating_views: bool,
+    undo_stack: Vec<UndoState>,
+    redo_stack: Vec<UndoState>,
+    file_path: PathBuf
 }
 
 impl EditorController
 {
-    pub fn new(gui: &'static EditorWindow, entities: Vec<EntityDictionary>) -> Self
+    pub(crate) fn new(file_path: &Path, entities: &[EntityDictionary]) -> Self
     {
-        let handle = gui.window.handle;
-
-        bind_event_handler( &handle, &handle, move |evt, event_data, hwnd|
+        Self
         {
-            match evt
+            saved: entities.to_vec(),
+            entities: entities.to_vec(),
+            file_path: file_path.to_path_buf(),
+            ..Default::default()
+        }
+    }
+    /// Binds the controller to the TUI and populates the entity list.
+    /// This should be called after the root view has been added.
+    /// Finally, the event loop must be run afterwards.
+    pub(crate) fn register(self, siv: &mut Cursive)
+    {
+        siv.set_user_data( self );
+        siv.add_global_callback( Event::Key( Key::Esc ), |siv| with_controller( siv, EditorController::on_close ) );
+
+        siv.call_on_name( ENTITY_LIST, |list: &mut SelectView<_>|
+        {
+            list.set_on_select( |siv, pos| with_controller( siv, |ctrl, siv| ctrl.on_list_select( siv, *pos ) ) );
+        });
+
+        siv.call_on_name( FILTER, |filter: &mut EditView|
+        {
+            filter.set_on_edit( |siv, _, _| with_controller( siv, EditorController::apply_filter ) );
+        });
+
+        with_controller( siv, EditorController::populate_list );
+    }
+
+    fn populate_list(&mut self, siv: &mut Cursive)
+    {
+        self.rebuild_list( siv, "" );
+    }
+
+    fn apply_filter(&mut self, siv: &mut Cursive)
+    {
+        if self.updating_views
+        {
+            return;
+        }
+
+        self.commit_rows();
+
+        let filter = siv
+            .call_on_name( FILTER, |input: &mut EditView| input.get_content().to_string() )
+        .unwrap_or_default();
+
+        self.rebuild_list( siv, &filter );
+    }
+
+    fn rebuild_list(&mut self, siv: &mut Cursive, filter: &str)
+    {
+        self.filtered_idxs = self.compute_filtered_idxs( filter );
+        self.updating_views = true;
+
+        siv.call_on_name( ENTITY_LIST, |list: &mut SelectView<_>|
+        {
+            list.clear();
+
+            for (pos, &idx) in self.filtered_idxs.iter().enumerate()
             {
-                Event::OnButtonClick if hwnd == gui.btn_create.handle => with_controller!( gui, |ctrl, app| ctrl.on_create( app ) ),
-                Event::OnButtonClick if hwnd == gui.btn_clone.handle => with_controller!( gui, |ctrl, app| ctrl.on_clone( app ) ),
-                Event::OnButtonClick if hwnd == gui.btn_delete.handle => with_controller!( gui, |ctrl, app| ctrl.on_delete( app ) ),
-                Event::OnButtonClick if hwnd == gui.btn_save.handle => with_controller!( gui, |ctrl, app| ctrl.on_save( app ) ),
-                Event::OnButtonClick => { }
-                Event::OnListBoxSelect if hwnd == gui.list.handle => with_controller!( gui, |ctrl, app| ctrl.on_list_select( app ) ),
-                Event::OnTextInput if hwnd == gui.text.handle => with_controller!( gui, |ctrl, app| ctrl.on_text_change( app ) ),
-                Event::OnTextInput if hwnd == gui.filter.handle => with_controller!( gui, |ctrl, app| ctrl.apply_filter( app ) ),
-                Event::OnTextInput => { }
-                Event::OnWindowClose => with_controller!( gui, |ctrl, app| ctrl.on_close( app, &event_data ) ),
-                _ => { }
+                list.add_item( self.entities[idx].get_classname().to_string(), pos );
+            }
+
+            if !self.filtered_idxs.is_empty()
+            {
+                list.set_selection( 0 );
             }
         });
 
-        Self
+        self.updating_views = false;
+        view::set_entity_count( siv, self.filtered_idxs.len(), self.entities.len(), !filter.trim().is_empty() );
+
+        match self.filtered_idxs.first().copied()
         {
-            saved: entities.clone(),
-            entities,
-            filtered_idxs: vec![],
-            prev_sel: -1,
-            updating_listbox: false
-        }
-    }
-    /// Binds the controller to the GUI and populates the listbox with the entity names.
-    /// This should be called after the GUI has been created.
-    /// Finally, it starts the event loop.
-    pub fn register(self, gui: &'static EditorWindow)
-    {
-        CTRL.with( |c| *c.borrow_mut() = Some( self ) );
-        with_controller!( gui, |ctrl, app| ctrl.populate_listbox( app ) );
-        dispatch_thread_events();
-    }
-
-    fn save(&mut self, gui: &EditorWindow)
-    {
-        if let Err( e ) = EntityDictionary::save_entities( &self.entities, &gui.file_path )
-        {
-            let title = "Error";
-            let content = format!( "Failed to save entities: {e}" );
-
-            let _ = modal_message( &gui.window, &MessageParams
-            { 
-                title,
-                content: &content,
-                buttons: MessageButtons::Ok,
-                icons: MessageIcons::Error
-            });
-
-            eprintln!( "❌ {}", content.red() )
-        }
-        else
-        {
-            self.saved = self.entities.clone()
-        }
-    }
-
-    fn populate_listbox(&mut self, gui: &EditorWindow)
-    {
-        self.updating_listbox = true;
-        gui.list.clear();
-        self.filtered_idxs.clear();
-
-        for (i, name) in self.entities.iter().map( |e| e.get_classname() ).enumerate()
-        {
-            gui.list.push( name.to_string() );
-            self.filtered_idxs.push( i );
-        }
-
-        self.updating_listbox = false;
-
-        if !self.filtered_idxs.is_empty()
-        {
-            gui.list.set_selection( Some( 0 ) );
-
-            if let Some( sel ) = gui.list.selection()
-            && let Some( &idx ) = self.filtered_idxs.get( sel )
-            && let Some( entity ) = self.entities.get( idx )
+            Some( idx ) => self.select_entity( siv, idx ),
+            None =>
             {
-                gui.text.set_text( &entity.render_keyvalues().unwrap_or_default() );
-            }
-                
-            self.prev_sel = 0;
-        }
-    }
-
-    fn apply_filter(&mut self, gui: &EditorWindow)
-    {
-        let filter = gui.filter.text().trim().to_lowercase();
-        self.updating_listbox = true;
-        gui.list.clear();
-        self.filtered_idxs.clear();
-
-        if filter.is_empty()
-        {
-            for (i, name) in self.entities.iter().map( |e| e.get_classname() ).enumerate()
-            {
-                gui.list.push( name.to_string() );
-                self.filtered_idxs.push( i );
+                self.selected_entity = None;
+                self.rows.clear();
+                self.refresh_table( siv );
             }
         }
-        else
-        {
-            for (i, ent) in self.entities.iter().enumerate()
+    }
+    /// Recomputes the entity indices that match the given filter
+    fn compute_filtered_idxs(&self, filter: &str) -> Vec<usize>
+    {
+        let filter = filter.trim().to_lowercase();
+
+        self.entities
+            .iter()
+            .enumerate()
+            .filter_map( |(idx, ent)|
             {
-                for (k, v) in ent.iter()
-                {
-                    if k.to_lowercase().contains( &filter ) || v.to_lowercase().contains( &filter )
-                    {
-                        gui.list.push( ent.get_classname().to_string() );
-                        self.filtered_idxs.push( i );
+                let matches = filter.is_empty()
+                    || ent.get_classname().to_lowercase().contains( &filter )
+                    || ent.iter().any( |(k, v)| k.to_lowercase().contains( &filter ) 
+                    || v.to_lowercase().contains( &filter ) );
 
-                        break;
-                    }
-                }
-            }
-        }
-
-        self.updating_listbox = false;
-
-        if !self.filtered_idxs.is_empty()
-        {
-            gui.list.set_selection( Some( 0 ) );
-
-            if let Some( sel ) = gui.list.selection()
-            && let Some( &idx ) = self.filtered_idxs.get( sel )
-            && let Some( entity ) = self.entities.get( idx )
-            {
-                gui.text.set_text( &entity.render_keyvalues().unwrap_or_default() );
-            }
-
-            self.prev_sel = 0;
-        }
-        else
-        {
-            gui.list.set_selection( None );
-            gui.text.set_text( "" );
-            self.prev_sel = -1;
-        }
+                matches.then_some( idx )
+            })
+        .collect()
     }
 
-    fn on_list_select(&mut self, gui: &EditorWindow)
+    fn on_list_select(&mut self, siv: &mut Cursive, pos: usize)
     {
-        if self.updating_listbox
+        if self.updating_views
         {
             return;
         }
 
-        let Some( sel ) = gui.list.selection() else { return };
-        let Some( &idx ) = self.filtered_idxs.get( sel ) else { return };
-
-        if self.prev_sel >= 0
-        {
-            let prev = self.prev_sel as usize;
-
-            if prev < self.entities.len()
-            {
-                self.entities[prev] = EntityDictionary::parse_keyvalues( &gui.text.text() );
-            }
-        }
-
-        if let Some( entity ) = self.entities.get( idx )
-        {
-            gui.text.set_text( &entity.render_keyvalues().unwrap_or_default() );
-        }
-
-        self.prev_sel = idx as i32;
-    }
-
-    fn on_text_change(&mut self, gui: &EditorWindow)
-    {
-        if self.updating_listbox
-        {
-            return;
-        }
-
-        let Some( sel ) = gui.list.selection()
+        let Some( &idx ) = self.filtered_idxs.get( pos )
         else
         {
             return
         };
 
-        let Some( &idx ) = self.filtered_idxs.get( sel ) 
+        if self.selected_entity == Some( idx )
+        {
+            return;
+        }
+        // Commit any pending edits before switching entities; entity switches act as one undo step
+        if self.has_pending_row_edits()
+        {
+            self.push_undo();
+        }
+        self.commit_rows();
+        self.select_entity( siv, idx );
+    }
+    /// Moves the list highlight and the properties table onto the given entity
+    fn set_active_entity(&mut self, siv: &mut Cursive, idx: usize)
+    {
+        let Some( pos ) = self.filtered_idxs.iter().position( |&i| i == idx )
+        else
+        {
+            return
+        };
+
+        self.updating_views = true;
+        siv.call_on_name( ENTITY_LIST, |list: &mut SelectView<usize>| list.set_selection( pos ) );
+        self.updating_views = false;
+        let _ = siv.call_on_name( ENTITY_LIST_SCROLL, |scroll: &mut ScrollView<NamedView<SelectView<usize>>>| scroll.get_scroller_mut().scroll_to_y( pos ) );
+        self.select_entity( siv, idx );
+    }
+
+    fn select_entity(&mut self, siv: &mut Cursive, idx: usize)
+    {
+        self.selected_entity = Some( idx );
+        self.load_rows();
+        self.refresh_table( siv );
+    }
+
+    fn load_rows(&mut self)
+    {
+        self.rows = self
+            .selected_entity
+            .and_then( |idx| self.entities.get( idx ) )
+            .map( |entity| entity.to_kv_pairs() )
+        .unwrap_or_default();
+
+        self.shown_classname = self
+            .rows
+            .iter()
+            .find( |row| row.0.trim() == "classname" )
+            .map( |row| row.1.clone() )
+            .filter( |value| !value.trim().is_empty() )
+        .unwrap_or_else( || "<no classname>".to_string() );
+    }
+    /// Whether the property rows differ from the currently selected entity's stored pairs.
+    fn has_pending_row_edits(&self) -> bool
+    {
+        let Some( idx ) = self.selected_entity
+        else
+        {
+            return false;
+        };
+
+        self.rows != self.entities.get( idx ).map( EntityDictionary::to_kv_pairs ).unwrap_or_default()
+    }
+    /// Writes the property table rows back into the currently selected entity
+    fn commit_rows(&mut self)
+    {
+        let Some( idx ) = self.selected_entity
         else
         {
             return
         };
 
         if idx < self.entities.len()
-        {
-            self.entities[idx] = EntityDictionary::parse_keyvalues( &gui.text.text() );
-        }
+        {   // Rebuilds an entity dictionary from the property table rows.
+            // Empty keys are dropped, duplicate keys keep their last value.
+            let pairs: Vec<_> = self.rows
+                .iter()
+                .map( |(key, value)| ( key.as_str(), value.as_str() ) )
+            .collect();
 
-        self.refresh_listbox_item( gui, sel as i32 );
+            self.entities[idx] = EntityDictionary::from_kv_pairs( &pairs );
+        }
     }
 
-    fn refresh_listbox_item(&mut self, gui: &EditorWindow, sel: i32)
+    fn refresh_table(&mut self, siv: &mut Cursive)
     {
-        self.updating_listbox = true;
-
-        if sel >= 0 && (sel as usize) < self.filtered_idxs.len()
+        self.updating_views = true;
+        siv.call_on_name( PROPERTY_TABLE, |table: &mut LinearLayout|
         {
-            let idx = self.filtered_idxs[sel as usize];
+            table.clear();
 
-            if let Some( entity ) = self.entities.get( idx )
+            for (index, row) in self.rows.iter().enumerate()
             {
-                let new_collection =
-                {
-                    let collection = gui.list.collection();
-
-                    if (sel as usize) < collection.len()
-                    {
-                        let mut new_collection = collection.clone();
-                        new_collection[sel as usize] = entity.get_classname().to_string();
-                        Some( new_collection )
-                    }
-                    else
-                    {
-                        None
-                    }
-                };
-
-                if let Some( new_collection ) = new_collection
-                {
-                    gui.list.set_collection( new_collection );
-                    gui.list.set_selection( Some( sel as usize ) );
-                }
+                table.add_child( view::property_row( index, &row.0, &row.1 ) );
             }
-        }
 
-        self.updating_listbox = false;
-    }
-    // ============ CALLBACKS ================
-    fn on_create(&mut self, gui: &EditorWindow)
-    {
-        let new_entity = EntityDictionary::new( "new_entity" );
-        self.entities.push( new_entity );
-        let idx = self.entities.len() - 1;
-
-        self.updating_listbox = true;
-        gui.list.push( self.entities[idx].get_classname().to_string() );
-        self.filtered_idxs.push( idx );
-        gui.list.set_selection( Some( gui.list.len() - 1 ) );
-        self.updating_listbox = false;
-        self.prev_sel = idx as i32;
-        gui.text.set_text( &self.entities[idx].render_keyvalues().unwrap_or_default() );
-
-        self.save( gui );
-    }
-
-    fn on_clone(&mut self, gui: &EditorWindow)
-    {
-        let Some( sel ) = gui.list.selection()
-        else
-        {
-            return
-        };
-
-        let Some( &idx ) = self.filtered_idxs.get( sel )
-        else
-        {
-            return
-        };
-
-        if idx >= self.entities.len()
-        {
-            return;
-        }
-
-        let cloned = self.entities[idx].clone();
-        self.entities.push( cloned );
-        let new_idx = self.entities.len() - 1;
-
-        self.updating_listbox = true;
-        gui.list.push( self.entities[new_idx].get_classname().to_string() );
-        self.filtered_idxs.push( new_idx );
-        gui.list.set_selection( Some( gui.list.len() - 1 ) );
-        self.updating_listbox = false;
-        self.prev_sel = new_idx as i32;
-        gui.text.set_text( &self.entities[new_idx].render_keyvalues().unwrap_or_default() );
-
-        self.save( gui );
-    }
-
-    fn on_delete(&mut self, gui: &EditorWindow)
-    {
-        let Some( sel ) = gui.list.selection()
-        else
-        {
-            return
-        };
-
-        let Some( &idx ) = self.filtered_idxs.get( sel )
-        else
-        {
-            return
-        };
-
-        if idx >= self.entities.len()
-        {
-            return;
-        }
-
-        self.entities.remove( idx );
-        self.updating_listbox = true;
-        gui.list.remove( sel );
-        self.filtered_idxs.remove( sel );
-        let new_len = gui.list.len();
-
-        if sel < new_len
-        {
-            gui.list.set_selection( Some( sel ) );
-
-            if let Some( new_sel ) = gui.list.selection()
-            && let Some( &new_idx ) = self.filtered_idxs.get( new_sel )
-            && let Some( entity ) = self.entities.get( new_idx )
+            if self.selected_entity.is_some()
             {
-                gui.text.set_text( &entity.render_keyvalues().unwrap_or_default() );
+                table.add_child( view::property_add_button() );
             }
-        }
-        else if new_len > 0
-        {
-            gui.list.set_selection( Some( new_len - 1 ) );
 
-            if let Some( new_sel ) = gui.list.selection()
-            && let Some( &new_idx ) = self.filtered_idxs.get( new_sel )
-            && let Some( entity ) = self.entities.get( new_idx )
-            {
-                gui.text.set_text( &entity.render_keyvalues().unwrap_or_default() );
-            }
-        }
-        else
-        {
-            gui.text.set_text( "" );
-            self.prev_sel = -1;
-        }
-
-        self.updating_listbox = false;
-        self.save( gui );
-    }
-
-    fn on_save(&mut self, gui: &EditorWindow)
-    {
-        if let Some( sel ) = gui.list.selection()
-        && let Some( &idx ) = self.filtered_idxs.get( sel )
-        && idx < self.entities.len()
-        {
-            self.entities[idx] = EntityDictionary::parse_keyvalues( &gui.text.text() );
-        }
-
-        self.save( gui );
-        stop_thread_dispatch();
-    }
-
-    fn on_close(&mut self, gui: &EditorWindow, event_data: &EventData)
-    {   // No changes to save, just exit
-        if self.entities == self.saved
-        {
-            stop_thread_dispatch();
-            return;
-        }
-
-        let choice = modal_message( &gui.window, &MessageParams
-        {
-            title: "Confirm changes",
-            content: &format!( "Save changes to {:?}?", gui.file_path.file_name().unwrap_or_default() ),
-            buttons: MessageButtons::YesNoCancel,
-            icons: MessageIcons::Question
         });
 
-        match choice
+        siv.call_on_name( FLAG_TABLE, |table: &mut LinearLayout|
         {
-            native_windows_gui::MessageChoice::Yes => self.save( gui ),
-            native_windows_gui::MessageChoice::No => { }
-            _ =>
-            {   // Cancelled or closed with the X button, so go back
-                if let EventData::OnWindowClose( close_data ) = event_data
-                {
-                    close_data.close( false );
-                }
+            table.clear();
 
-                return;
+            if let Some( idx ) = self.selected_entity
+            {
+                let flags = self.entities[idx].get_spawnflags().unwrap_or( 0 );
+
+                for sf_boxs in view::SPAWNFLAG_BOXES.chunks( 4 )
+                {
+                    let mut row = LinearLayout::horizontal();
+
+                    for &mask in sf_boxs
+                    {
+                        row.add_child( view::flag_checkbox( mask, flags & mask != 0 ) );
+                    }
+
+                    table.add_child( row );
+                }
             }
+        });
+
+        self.updating_views = false;
+
+        let classname = self
+            .selected_entity
+            .and_then( |idx| self.entities.get( idx ) )
+            .map( |entity| entity.get_classname() );
+
+        view::set_properties_title( siv, classname );
+    }
+
+    fn save_and_rebuild(&mut self, siv: &mut Cursive)
+    {
+        if let Err( e ) = self.save()
+        {
+            eprintln!( "❌ Failed to save entities: {e}" );
+            return;
         }
 
-        stop_thread_dispatch();
+        let filter = Self::current_filter( siv );
+        self.rebuild_list( siv, &filter );
+    }
+
+    fn property_changed(&mut self, siv: &mut Cursive, row: usize, is_key: bool, value: String)
+    {
+        if self.updating_views || row >= self.rows.len()
+        {
+            return;
+        }
+
+        let was_classname_row = self.rows[row].0.trim() == "classname";
+
+        if is_key
+        {
+            self.rows[row].0 = value;
+        }
+        else
+        {
+            self.rows[row].1 = value;
+        }
+
+        if was_classname_row || self.rows[row].0.trim() == "classname"
+        {   // Keep the entity listbox entry in sync while the classname is edited
+            self.sync_entity_list_label( siv );
+        }
+    }
+    /// Relabels the selected entity's entry in the listbox to match the edited classname.
+    /// An empty classname keeps the previously shown label instead of blanking the entry.
+    fn sync_entity_list_label(&mut self, siv: &mut Cursive)
+    {
+        let Some( idx ) = self.selected_entity
+        else
+        {
+            return
+        };
+
+        let Some( pos ) = self.filtered_idxs.iter().position( |&i| i == idx )
+        else
+        {
+            return
+        };
+
+        let candidate = self
+            .rows
+            .iter()
+            .find( |row| row.0.trim() == "classname" )
+            .map( |row| row.1.clone() )
+        .unwrap_or_default();
+
+        if !candidate.trim().is_empty()
+        {
+            self.shown_classname = candidate;
+        }
+
+        self.updating_views = true;
+        siv.call_on_name( ENTITY_LIST, |list: &mut SelectView<usize>|
+        {
+            // SelectView has no in-place label mutator, so replace the item at its position;
+            // the callback returned by remove_item is intentionally dropped.
+            list.remove_item( pos );
+            list.insert_item( pos, self.shown_classname.clone(), pos );
+            // remove_item nudges the focus up (shown row), so restore it to the original row
+            list.set_selection( pos );
+        });
+        self.updating_views = false;
+    }
+
+    pub(crate) fn delete_property_row(&mut self, siv: &mut Cursive, row: usize)
+    {
+        if row < self.rows.len()
+        {
+            self.push_undo();
+            self.rows.remove( row );// move commit AFTER removing the row
+            self.commit_rows();
+            self.refresh_table( siv );
+        }
+    }
+
+    fn save(&mut self) -> anyhow::Result<()>
+    {
+        EntityDictionary::save_entities( &self.entities, &self.file_path )?;
+        self.saved = self.entities.clone();
+        
+        Ok( () )
+    }
+
+    fn current_filter(siv: &mut Cursive) -> String
+    {
+        siv.call_on_name( FILTER, |input: &mut EditView| input.get_content().to_string() )
+            .unwrap_or_default()
+    }
+    // ============ UNDO / REDO ================
+    /// Snapshots the current state onto the undo stack and clears the redo stack.
+    fn push_undo(&mut self)
+    {
+        self.undo_stack.push( UndoState
+        {
+            entities: self.entities.clone(),
+            selected_entity: self.selected_entity
+        });
+        self.redo_stack.clear();
+    }
+    /// Restores the given snapshot and rebuilds every derived view/table.
+    fn restore(&mut self, siv: &mut Cursive, state: UndoState)
+    {
+        self.entities = state.entities;
+        self.selected_entity = state.selected_entity;
+        let filter = Self::current_filter( siv );
+        self.filtered_idxs = self.compute_filtered_idxs( &filter );
+        self.updating_views = true;
+
+        siv.call_on_name( ENTITY_LIST, |list: &mut SelectView<_>|
+        {
+            list.clear();
+
+            for (pos, &idx) in self.filtered_idxs.iter().enumerate()
+            {
+                list.add_item( self.entities[idx].get_classname().to_string(), pos );
+            }
+        });
+
+        self.updating_views = false;
+        view::set_entity_count( siv, self.filtered_idxs.len(), self.entities.len(), !filter.trim().is_empty() );
+        // Prefer the restored selection if it is still valid, otherwise fall back to the first visible one
+        let effective = self
+            .selected_entity
+            .filter( |&i| i < self.entities.len() )
+            .or( self.filtered_idxs.first().copied() );
+
+        self.selected_entity = effective;
+
+        match effective
+        {
+            Some( idx ) =>
+            {
+                if let Some( pos ) = self.filtered_idxs.iter().position( |&i| i == idx )
+                {
+                    self.updating_views = true;
+                    siv.call_on_name( ENTITY_LIST, |list: &mut SelectView<usize>| list.set_selection( pos ) );
+                    let _ = siv.call_on_name( ENTITY_LIST_SCROLL, |scroll: &mut ScrollView<NamedView<SelectView<usize>>>| scroll.get_scroller_mut().scroll_to_y( pos ) );
+                    self.updating_views = false;
+                }
+
+                self.select_entity( siv, idx );
+            }
+
+            None =>
+            {
+                self.rows.clear();
+                self.refresh_table( siv );
+            }
+        }
+    }
+
+    pub(crate) fn on_undo(&mut self, siv: &mut Cursive)
+    {
+        self.commit_rows();
+        let Some( state ) = self.undo_stack.pop()
+        else
+        {
+            return
+        };
+        self.redo_stack.push( UndoState
+        {
+            entities: self.entities.clone(),
+            selected_entity: self.selected_entity
+        });
+        self.restore( siv, state );
+    }
+
+    pub(crate) fn on_redo(&mut self, siv: &mut Cursive)
+    {
+        let Some( state ) = self.redo_stack.pop()
+        else
+        {
+            return
+        };
+        self.undo_stack.push( UndoState
+        {
+            entities: self.entities.clone(),
+            selected_entity: self.selected_entity
+        });
+        self.restore( siv, state );
+    }
+    // ============ BUTTON CALLBACKS ================
+    pub(crate) fn on_create(&mut self, siv: &mut Cursive)
+    {
+        self.commit_rows();
+        self.push_undo();
+        self.entities.push( EntityDictionary::new( "new_entity" ) );
+        let new_idx = self.entities.len() - 1;
+        // Reset the filter so the new entity is visible in the list
+        self.updating_views = true;
+        siv.call_on_name( FILTER, |input: &mut EditView| input.set_content( "" ) );
+        self.updating_views = false;
+        self.save_and_rebuild( siv );
+        self.set_active_entity( siv, new_idx );
+    }
+
+    pub(crate) fn on_clone(&mut self, siv: &mut Cursive)
+    {
+        self.commit_rows();
+
+        let Some( cloned ) = self.selected_entity.and_then( |idx| self.entities.get( idx ).cloned() )
+        else
+        {
+            return
+        };
+
+        self.push_undo();
+        self.entities.push( cloned );
+        let new_idx = self.entities.len() - 1;
+        self.save_and_rebuild( siv );
+        self.set_active_entity( siv, new_idx );
+    }
+
+    pub(crate) fn on_delete(&mut self, siv: &mut Cursive)
+    {
+        self.commit_rows();
+
+        let Some( idx ) = self.selected_entity
+        else
+        {
+            return
+        };
+
+        self.push_undo();
+
+        if idx < self.entities.len()
+        {
+            self.entities.remove( idx );
+        }
+
+        self.save_and_rebuild( siv );
+    }
+
+    pub(crate) fn on_add_property_row(&mut self, siv: &mut Cursive)
+    {   // Commit pending edits first so they are not clobbered by the table rebuild
+        self.commit_rows();
+        self.push_undo();
+        self.rows.push( ( String::new(), String::new() ) );
+        self.refresh_table( siv );
+        // Note sure how to deal with the Result from focus_name, but it's not critical
+        match siv.focus_name( &format!( "property_key_{}", self.rows.len() - 1 ) )
+        {
+            Ok( _o ) => { },
+            Err(  _e ) => { },
+        }
+    }
+
+    pub(crate) fn on_save(&mut self, siv: &mut Cursive)
+    {
+        self.commit_rows();
+        if let Err( e ) = self.save()
+        {
+            eprintln!( "❌ Failed to save entities: {e}" );
+        }
+        else
+        {
+            siv.quit();
+        }
+    }
+    // I don't think this ever gets called.
+    pub(crate) fn on_close(&mut self, siv: &mut Cursive)
+    {   // No changes to save, just exit
+        self.commit_rows();
+
+        if self.entities == self.saved
+        {
+            siv.quit();
+            return;
+        }
+
+        let file_name = self.file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+
+        let mut confirm = Dialog::text( format!( "Save changes to {file_name}?" ) )
+            .title( "Confirm changes" )
+            .button( "Yes", |siv|
+            {
+                with_controller( siv, |ctrl, siv|
+                {
+                    if let Err( e ) = ctrl.save()
+                    {
+                        let s_err = format!( "❌ Failed to save entities: {e}" );
+                        eprint!( "{s_err}" );
+                        super::view::popup( siv, "Error", &s_err, "OK", |_| { } );
+                    }
+                    
+                    siv.quit();
+                })
+            })
+            .button( "No", |siv| siv.quit() )
+            .button( "Cancel", |siv| { siv.pop_layer(); } );
+        // Relabel to square brackets, matching the other buttons
+        for ( label, button ) in [ "[ Yes ]", "[ No ]", "[ Cancel ]" ].into_iter().zip( confirm.buttons_mut() )
+        {
+            button.set_label_raw( label );
+        }
+
+        siv.add_layer( confirm );
     }
 }
+// ============ CALLBACK GLUE FOR THE VIEW ================
+pub(crate) fn property_changed(siv: &mut Cursive, row: usize, is_key: bool, value: String)
+{
+    with_controller( siv, |ctrl, siv| ctrl.property_changed( siv, row, is_key, value ) );
+}
 
+pub(crate) fn flag_changed(siv: &mut Cursive, mask: u32, checked: bool)
+{
+    with_controller( siv, |ctrl, siv|
+    {
+        if ctrl.updating_views
+        {
+            return;
+        }
+
+        let Some( idx ) = ctrl.selected_entity
+        else
+        {
+            return
+        };
+
+        let mut flags = ctrl.entities.get( idx ).unwrap_or(  &EntityDictionary::new( "new_entity" ) ).get_spawnflags().unwrap_or( 0 );
+        ctrl.commit_rows();
+        ctrl.push_undo();
+
+        if checked
+        {
+            flags |= mask;
+        }
+        else
+        {
+            flags &= !mask;
+        }
+
+        if let Some( entity ) = ctrl.entities.get_mut( idx )
+        {
+            entity.set_spawnflags( flags );
+        }
+        // Keep the property-table rows in sync so a later commit/save doesn't drop the change
+        let value = 
+        if flags == 0 
+        { 
+            String::new()
+        }
+        else
+        {
+            flags.to_string()
+        };
+
+        match ctrl.rows.iter_mut().find( |( k, _ )| k == "spawnflags" )
+        {
+            Some( row ) => row.1 = value,
+            None if flags != 0 => ctrl.rows.push( ( "spawnflags".to_string(), value ) ),
+            None => { }
+        }
+
+        ctrl.refresh_table( siv );
+    });
+}

@@ -36,21 +36,15 @@ use crossterm::
 
 use crate::
 {
-    APPNAME,
+    prelude::*,
     bsp::ent,
-    clear_terminal,
+    cli,
+    editor,
     exec,
-    cli::
-    {
-        self,
-        Menu
-    },
     utils
 };
 
-#[cfg( windows )] use crate::editor;
-
-pub fn run() -> Result<()>
+pub(crate) fn run() -> Result<()>
 {
     crossterm::execute!( io::stdout(), terminal::SetTitle( APPNAME ) )?;
     println!( "{}\nExtract and Import BSP entity data", APPNAME.on_green().bold().underline_white() );
@@ -109,7 +103,6 @@ pub fn run() -> Result<()>
         return Ok( () );
     }
 
-    #[cfg( windows )]
     if args.contains( &Menu::Edit )
     {
         let Some( path ) = paths.first()
@@ -117,10 +110,8 @@ pub fn run() -> Result<()>
         {
             bail!( "Please provide a BSP to edit e.g. '-edit bspfile.bsp'" );
         };
-
-        editor::launch( path )?;
-
-        return Ok( () );
+        
+        return editor::launch( path );
     }
 
     const BATCH_ACTIONS: [Menu; 4] = [ Menu::Extract, Menu::Import, Menu::SplitExtract, Menu::SplitImport ];
@@ -187,6 +178,7 @@ pub fn run() -> Result<()>
 
     while Menu::show()?
     {
+        crossterm::execute!( io::stdout(), terminal::SetTitle( APPNAME ) )?;
         println!( "\nPress any key to return..." );
         let _ = cli::get_keystroke();
         clear_terminal!();

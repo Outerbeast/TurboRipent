@@ -16,14 +16,10 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
-use std::
+use std::path::
 {
-    fs,
-    path::
-    {
-        Path,
-        PathBuf
-    },
+    Path,
+    PathBuf
 };
 
 use anyhow::
@@ -32,85 +28,54 @@ use anyhow::
     bail
 };
 
+use glob::glob;
 use crossterm::style::Stylize;
 
 use crate::
 {
     bsp::ent,
-    cli::Menu,
     current_dir_path,
     prelude::*
 };
-// Collects BSP files from a directory and its subdirectories.
-pub fn collect_bsps(input: impl AsRef<Path>) -> Vec<PathBuf>
+/// Collects BSP files from a directory and its subdirectories.
+pub(crate) fn collect_bsps(input: impl AsRef<Path>) -> Vec<PathBuf>
 {
     let path = input.as_ref();
-
+    // Its a single BSP file, return it as a single-element vector
     if !path.as_os_str().is_empty() && !path.is_dir() && path.has_extension( &[EXT_BSP] )
-    {   
-        return vec![path.to_path_buf()];
-    }
-    // Input might end with a trailing wildcard
-    let is_wildcard = path.to_string_lossy().ends_with( '*' );
-
-    if path.as_os_str().is_empty() || path.is_dir() || is_wildcard
     {
-        let dir =
-        {
-            if path.as_os_str().is_empty()
-            {
-                current_dir_path!()
-            } 
-            else if is_wildcard
-            {
-                path.parent().unwrap_or( Path::new( "." ) ).to_path_buf()
-            } 
-            else
-            {
-                path.to_path_buf()
-            }
-        };
-        // Trim the wildcard from the input to get the prefix for
-        let prefix = is_wildcard.then( ||
-        {
-            path.file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .trim_end_matches( '*' )
-            .to_string()
-        });
-
-        let mut bsps = vec![];
-        if let Ok( entries ) = fs::read_dir( &dir )
-        {
-            for entry in entries.flatten()
-            {
-                if !entry.file_type().is_ok_and( |ft| ft.is_file() )
-                || !&entry.path().has_extension( &[EXT_BSP] )
-                {
-                    continue;
-                }
-
-                if let Some( ref p ) = prefix && !entry.file_name().to_string_lossy().starts_with( p )
-                {
-                    continue;
-                }
-
-                bsps.push( entry.path() );
-            }
-        }
-
-        return bsps;
+        return vec![ path.to_path_buf() ];
     }
 
-    vec![]
+    let pattern =
+    if path.as_os_str().is_empty()
+    {   // No input, use current directory
+        format!( "{}/*", current_dir_path!().to_string_lossy() )
+    }
+    else if path.is_dir()
+    {   // Folder input, use folder path with wildcard
+        format!( "{}/*", path.to_string_lossy() )
+    }
+    else if path.to_string_lossy().ends_with( '*' )
+    {   // Filter input, use the input as-is (with wildcard)
+        path.to_string_lossy().to_string()
+    }
+    else// user wildcard IS the pattern
+    {
+        return vec![];
+    };
+
+    glob( &pattern )
+        .into_iter().flatten().flatten() // Result<Paths> → Paths → PathBuf
+        .filter( |p| p.is_file() && p.has_extension( &[EXT_BSP] ) )
+    .collect()
 }
-// Extraction/importation of BSP files, Result: collection of success/failed BSPs
-pub fn batch_ripent(bsp_fileordir_path: &Path, action: &Menu) -> Result<(Vec<PathBuf>, Vec<PathBuf>)>
+/// Extraction/importation of BSP files, Result: collection of success/failed BSPs
+pub(crate) fn batch_ripent(bsp_fileordir_path: &Path, action: &Menu) -> Result<(Vec<PathBuf>, Vec<PathBuf>)>
 {
     if !matches!( action, Menu::Extract | Menu::Import | Menu::SplitExtract | Menu::SplitImport | Menu::Repair )
     {
-        bail!( "Invalid action '{:?}' for batch ripent", action );
+        bail!( "Invalid action '{action:?}' for batch ripent." );
     }
 
     let bsps = collect_bsps( bsp_fileordir_path );
@@ -124,15 +89,7 @@ pub fn batch_ripent(bsp_fileordir_path: &Path, action: &Menu) -> Result<(Vec<Pat
 
     for b in &bsps
     {
-        let bsp_path =
-        if bsp_fileordir_path.has_extension( &[EXT_BSP] ) || bsps.len() == 1
-        {
-            b.clone()
-        }
-        else
-        {
-            bsp_fileordir_path.join( b )
-        };
+        let bsp_path = b.clone();
 
         println!( "{}", format!( "{action:?}ing: {bsp_path:?}" ).cyan() );
 
@@ -192,7 +149,7 @@ pub fn batch_ripent(bsp_fileordir_path: &Path, action: &Menu) -> Result<(Vec<Pat
     Ok( ( success, failed ) )
 }
 // Stat generation for BSP files, Result: collection of BSP file reports
-pub fn batch_stats(bsp_fileordir_path: &Path) -> Result<Vec<(PathBuf, String)>>
+pub(crate) fn batch_stats(bsp_fileordir_path: &Path) -> Result<Vec<(PathBuf, String)>>
 {
     let bsps = collect_bsps( bsp_fileordir_path );
 

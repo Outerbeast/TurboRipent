@@ -42,23 +42,19 @@ use anyhow::
 
 use crossterm::style::Stylize;
 
-use crate::bsp::
-{
-    BspFile,
-    LumpIdx
-};
+use crate::prelude::*;
 
-pub const EXT_ENT: &str = "ent";
-pub const EXT_POINT_ENT: &str = "entp";
-pub const EXT_BRUSH_ENT: &str = "entm";
-pub const EXT_BSP: &str = "bsp";
+pub(crate) const EXT_ENT: &str = "ent";
+pub(crate) const EXT_POINT_ENT: &str = "entp";
+pub(crate) const EXT_BRUSH_ENT: &str = "entm";
+pub(crate) const EXT_BSP: &str = "bsp";
 
 #[derive( Clone, Default, Debug, PartialEq )]
-pub struct EntityDictionary(HashMap<String, String>);
+pub(crate) struct EntityDictionary(HashMap<String, String>);
 
 impl EntityDictionary
 {   /// Constructor
-    pub fn new(classname: &str) -> Self
+    pub(crate) fn new(classname: &str) -> Self
     {
         Self( HashMap::from( [( "classname".to_string(), classname.to_string() )] ) )
     }
@@ -79,12 +75,12 @@ impl EntityDictionary
         this
     }
     /// Collection constructor - entity plain text to edicts
-    #[inline] pub fn from_ent_txt(ent_txt: &str) -> Vec<Self>
+    #[inline] pub(crate) fn from_ent_txt(ent_txt: &str) -> Vec<Self>
     {
         Self::make_iter( ent_txt ).collect()
     }
     /// Iterator constructor - entity plain text to edicts iterator
-    pub fn make_iter(ent_txt: &str) -> impl Iterator<Item = Self>
+    pub(crate) fn make_iter(ent_txt: &str) -> impl Iterator<Item = Self>
     {
         ent_txt.split( '{' ).skip( 1 ).filter_map( |block|
         {
@@ -93,7 +89,7 @@ impl EntityDictionary
         })
     }
 
-    pub fn get_classname(&self) -> &str
+    pub(crate) fn get_classname(&self) -> &str
     {
         self.0
             .get( "classname" )
@@ -102,7 +98,7 @@ impl EntityDictionary
         .unwrap_or( "<no classname>" )
     }
     /// Returns the brush model index for brush entities (worldspawn returns 0), or None for point entities.
-    pub fn get_model_index(&self) -> Option<usize>
+    pub(crate) fn get_model_index(&self) -> Option<usize>
     {
         if self.get_classname() == "worldspawn"
         {
@@ -114,8 +110,52 @@ impl EntityDictionary
             .and_then( |m| m.strip_prefix( '*' ) )
             .and_then( |s| s.parse().ok() )
     }
+    /// Returns the spawnflags value for entities that have it, or None for entities that don't.
+    #[inline] pub(crate) fn get_spawnflags(&self) -> Option<u32>
+    {
+        self.0.get( "spawnflags" ).and_then( |s| s.parse().ok() )
+    }
 
-    pub fn to_txt(entities: &[Self]) -> String
+    pub(crate) fn set_spawnflags(&mut self, flags: u32)
+    {
+        if flags == 0
+        {
+            self.0.remove( "spawnflags" );
+            return;
+        }
+
+        self.0.insert( "spawnflags".to_string(), flags.to_string() );
+    }
+
+    pub(crate) fn from_kv_pairs(pairs: &[(&str, &str)] ) -> Self
+    {
+        let mut this = EntityDictionary::default();
+
+        for row in pairs
+        {
+            let key = row.0.trim();
+
+            if !key.is_empty()
+            {
+                this.insert( key.to_string(), row.1.to_string() );
+            }
+        }
+
+        this
+    }
+
+    pub(crate) fn to_kv_pairs(&self) -> Vec<(String, String)>
+    {
+        let mut keys: Vec<_> = self.keys().map( |key| key.as_str() ).collect();
+        keys.sort();
+
+        keys
+            .into_iter()
+            .map( |key| ( key.to_string(), self[key].to_string() ) )
+        .collect()
+    }
+
+    pub(crate) fn to_txt(entities: &[Self]) -> String
     {
         let mut buf = String::new();
 
@@ -130,7 +170,7 @@ impl EntityDictionary
 
             for (key, value) in kv.iter()
             {
-                writeln!( buf, "\"{key}\" \"{value}\"" ).expect( "Failed to write to buffer.");
+                writeln!( buf, "\"{key}\" \"{value}\"" ).expect( "infallible: writing to String" );
             }
 
             buf.push_str( "}\n" );
@@ -139,7 +179,7 @@ impl EntityDictionary
         buf
     }
     /// Loads entities from ENT or BSP files, returns a collection of edicts
-    pub fn load_entities(file_path: &Path) -> Result<Vec<Self>>
+    pub(crate) fn load_entities(file_path: &Path) -> Result<Vec<Self>>
     {
         match file_path.extension().and_then( |ext| ext.to_str() )
         {
@@ -152,14 +192,14 @@ impl EntityDictionary
                 Ok( Self::from_ent_txt( &ExtractTarget::Text.with( &bsp, None )? ) )
             }
 
-            Some( other_ext ) => bail!( "Unknown file extension '{}'", other_ext ),
-            None => bail!( "Must load from a file." )
+            Some( other_ext ) => bail!( "Invalid file type '{other_ext}'. Requires ENT/BSP." ),
+            None => bail!( "Cannot use folder. Must specify a ENT/BSP file." )
         }
     }
     /// Saves a collection of entities to a file.
     /// For plain ENT text files, contents are overwritten and saved
     /// For BSP files, the entity data is imported into the BSP
-    pub fn save_entities(entities: &[Self], file_path: &Path) -> Result<()>
+    pub(crate) fn save_entities(entities: &[Self], file_path: &Path) -> Result<()>
     {
         let ent_txt = Self::to_txt( entities );
 
@@ -167,8 +207,8 @@ impl EntityDictionary
         {
             Some( EXT_ENT ) | Some( EXT_POINT_ENT ) | Some( EXT_BRUSH_ENT ) => Ok( fs::write( file_path, &ent_txt )? ),
             Some( EXT_BSP ) => Ok( ImportSource::Text( ent_txt ).with( BspFile::load( file_path )? )?.save()? ),
-            Some( other_ext ) => bail!( "Unknown file extension '{}'", other_ext ),
-            None => bail!( "Must save to a file." )
+            Some( other_ext ) => bail!( "Invalid file type '{other_ext}'. Requires ENT/BSP." ),
+            None => bail!( "Cannot use folder. Must specify a ENT/BSP file." )
         }
     }
     /// Converts a JSON string into a vector of EntityDictionary objects.
@@ -213,7 +253,7 @@ impl Index<&str> for EntityDictionary
 
     fn index(&self, key: &str) -> &String { &self.0[key] }
 }
-pub enum ExtractTarget
+pub(crate) enum ExtractTarget
 {
     Text,
     Single,
@@ -227,7 +267,7 @@ impl ExtractTarget
     /// If a output path is specified, the extracted data will be written to that path as an:
     /// - ent file (Single)
     /// - entp + entm (Split)
-    pub fn with(&self, bsp: &BspFile, some_output_path: Option<&Path>) -> Result<String>
+    pub(crate) fn with(&self, bsp: &BspFile, some_output_path: Option<&Path>) -> Result<String>
     {
         let ent_data = bsp.slice_lump( LumpIdx::Entities );
 
@@ -298,7 +338,7 @@ impl ExtractTarget
     }
 }
 
-pub enum ImportSource
+pub(crate) enum ImportSource
 {
     Text(String),
     Single(PathBuf),
@@ -310,7 +350,7 @@ impl ImportSource
     /// Imports entity data from an entity file into a BSP.
     /// The BSP file is NOT ovewritten here - BspFile::save() must be executed after this function returns OK.
     /// This avoids BSP corruption.
-    pub fn with(self, mut bsp: BspFile) -> Result<BspFile>
+    pub(crate) fn with(self, mut bsp: BspFile) -> Result<BspFile>
     {
         let ent_txt = 
         match self
@@ -478,7 +518,7 @@ pub(crate) fn normalise_entities(text: &str) -> String
     fixed
 }
 /// Strip out entities that reference non-existent brush models
-pub fn strip_invalid_brushents(entities: &mut Vec<EntityDictionary>, bsp: &BspFile)
+fn strip_invalid_brushents(entities: &mut Vec<EntityDictionary>, bsp: &BspFile)
 {
     let model_indices = bsp.slice_lump( LumpIdx::Models ).len() / 64;
     entities.retain( |ent|
@@ -500,7 +540,7 @@ pub fn strip_invalid_brushents(entities: &mut Vec<EntityDictionary>, bsp: &BspFi
     });
 }
 /// Runs entity normalisation operations on a BSP or ENT file.
-pub fn repair(bsporent_path: &Path) -> Result<()>
+pub(crate) fn repair(bsporent_path: &Path) -> Result<()>
 {
     match bsporent_path.extension().and_then( |ext| ext.to_str() )
     {
@@ -518,14 +558,14 @@ pub fn repair(bsporent_path: &Path) -> Result<()>
             println!( "Repaired entities → {bsporent_path:?}" );
         }
 
-        Some( s ) => bail!( "Unsupported file type '{s}'. Requires ENT/BSP" ),
-        None => bail!( "Unsupported file type. Requires ENT/BSP" )
+        Some( other_ext ) => bail!( "Invalid file type '{other_ext}'. Requires ENT/BSP." ),
+        None => bail!( "Cannot use folder. Must specify a ENT/BSP file." )
     }
 
     Ok( () )
 }
 /// Decides automatically extraction/importation based on file type
-pub fn rip(bsporent_path: &Path) -> Result<()>
+pub(crate) fn rip(bsporent_path: &Path) -> Result<()>
 {
     if !bsporent_path.exists() 
     {
@@ -565,8 +605,7 @@ pub fn rip(bsporent_path: &Path) -> Result<()>
             Ok( () )
         }
 
-        Some( s ) => bail!( "Invalid file type '{s}'. Requires ENT/BSP" ),
-        None => bail!( "Invalid file type. Requires ENT/BSP" )
+        Some( other_ext ) => bail!( "Invalid file type '{other_ext}'. Requires ENT/BSP." ),
+        None => bail!( "Cannot use folder. Must specify a ENT/BSP file." )
     }
 }
-

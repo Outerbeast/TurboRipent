@@ -22,10 +22,10 @@ mod exec;
 mod cli;
 mod prelude;
 mod utils;
-#[cfg( windows )] mod editor;
+mod editor;
 #[cfg( test )] mod tests;
 
-pub const APPNAME: &str = env!( "CARGO_PKG_NAME" );
+pub(crate) const APPNAME: &str = env!( "CARGO_PKG_NAME" );
 
 fn main() -> std::process::ExitCode
 {

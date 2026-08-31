@@ -17,11 +17,13 @@ You should have received a copy of the GNU General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 // Commonly shared crate-wide items, imported via `use crate::prelude::*;`
-pub use crate::
+pub(crate) use crate::
 {
+    APPNAME,
     bsp::
     {
         BspFile,
+        LumpIdx,
         ent::
         {
             EntityDictionary,
@@ -34,5 +36,7 @@ pub use crate::
         },
         stats::EntityReport
     },
+    cli::Menu,
+    clear_terminal,
     utils::HasExtension
 };

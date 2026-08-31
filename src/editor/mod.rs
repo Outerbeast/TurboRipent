@@ -16,8 +16,8 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
-pub mod view;
-pub mod controller;
+pub(crate) mod view;
+pub(crate) mod controller;
 
 use std::path::
 {
@@ -27,6 +27,7 @@ use std::path::
 
 use anyhow::
 {
+    anyhow,
     Result,
     bail
 };
@@ -34,67 +35,16 @@ use anyhow::
 use super::
 {
     cli::get_prompt_input,
-    utils::
-    {
-        hide_terminal,
-        show_terminal
-    },
     bsp::ent::EntityDictionary
 };
 
 use crate::prelude::*;
-
-impl EntityDictionary
-{   /// This is used by the editor to construct entity dictionary from key=value pairs
-    pub fn parse_keyvalues(s: &str) -> Self
-    {
-        let mut kvs = Self::default();
-
-        for line in s.lines()
-        {
-            let line = line.trim();
-            if line.is_empty()
-            {
-                continue;
-            }
-
-            if let Some( eq_pos ) = line.find( '=' )
-            {
-                let key = line[..eq_pos].trim().to_string();
-                let val = line[eq_pos + 1..].trim().to_string();
-                kvs.insert( key, val );
-            }
-        }
-
-        kvs
-    }
-    /// This is used by the editor to render entity dictionary into a key=value line
-    /// Returns None if the dictionary is empty
-    pub fn render_keyvalues(&self) -> Option<String>
-    {
-        if self.is_empty()
-        {
-            return None;
-        }
-
-        let mut keys: Vec<_> = self.keys().collect();
-        keys.sort();
-
-        let body = keys
-            .iter()
-            .map( |k| format!( "{k}={}", self[*k] ) )
-            .collect::<Vec<_>>()
-        .join( "\r\n" );
-
-        Some( body )
-    }
-}
 /// Launch the application with the given to BSP or ENT
-pub fn launch(chosen_path: impl AsRef<Path>) -> Result<()>
+pub(crate) fn launch(chosen_path: impl AsRef<Path>) -> Result<()>
 {
     let chosen_path = chosen_path.as_ref();
-    let file_path =
-    if chosen_path.to_string_lossy().is_empty() 
+    let edit_path =
+    if chosen_path.to_string_lossy().is_empty()
     || !chosen_path.has_extension( &[EXT_BSP, EXT_ENT, EXT_POINT_ENT, EXT_BRUSH_ENT] )
     {
         let path_str =
@@ -104,7 +54,7 @@ pub fn launch(chosen_path: impl AsRef<Path>) -> Result<()>
         {
             bail!( "User cancelled." );
         }
-        
+
         PathBuf::from( path_str )
     }
     else
@@ -112,25 +62,8 @@ pub fn launch(chosen_path: impl AsRef<Path>) -> Result<()>
         PathBuf::from( chosen_path )
     };
 
-    println!( "Opening: {file_path:?}" );
-    hide_terminal();
-    let entity_dicts = EntityDictionary::load_entities( &file_path )?;
-    // Launch the GUI
-    let gui = view::EditorWindow::new( &file_path )?;
-    controller::EditorController::new( gui, entity_dicts ).register( gui );
-    // Hide the GUI window so it doesn't obscure the console
-    #[cfg( target_os = "windows" )]
-    if let Some( hwnd ) = gui.window.handle.hwnd()
-    {
-        unsafe extern "system"
-        {
-            fn ShowWindow(hwnd: *mut std::ffi::c_void, nCmdShow: i32) -> i32;
-        }
-
-        unsafe { ShowWindow( hwnd as *mut std::ffi::c_void, 0 ); }// SW_HIDE = 0
-    }
-
-    show_terminal();
-
-    Ok( () )
+    println!( "Opening: {edit_path:?}" );
+    // Launch the TUI
+    view::display( &edit_path, &EntityDictionary::load_entities( &edit_path )? )
+        .map_err( |e| anyhow!( e.to_string() ) )
 }
